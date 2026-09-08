@@ -1,0 +1,105 @@
+server:
+  port: 8080
+  shutdown: graceful
+
+spring:
+  application:
+    name: cm-bot-service
+  lifecycle:
+    # How long in-flight requests/streams get to finish on shutdown before being force-closed.
+    timeout-per-shutdown-phase: 20s
+  codec:
+    # Bounds the server-side request body buffer (this API's payloads are tiny JSON bodies;
+    # generous but not unbounded). The ML-agent WebClient has its own, separately configured limit.
+    max-in-memory-size: 256KB
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+    operations-sorter: method
+  api-docs:
+    path: /v3/api-docs
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,circuitbreakers,circuitbreakerevents
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      group:
+        # Explicit: a downstream ML Agent outage must never pull an otherwise-healthy
+        # instance out of rotation — that's the circuit breaker's job, not readiness's.
+        # The circuit-breaker health indicator still affects the plain /actuator/health
+        # aggregate (useful signal there), just never this group.
+        readiness:
+          include: readinessState
+  tracing:
+    sampling:
+      probability: 1.0
+
+ml-agent:
+  # "mock" (default, MockMlAgentClient) or "http" (HttpMlAgentClient, real WebClient calls).
+  mode: mock
+  # Only used in mode: http — still required (non-blank) because these properties are
+  # bound and validated at startup regardless of which client bean ends up active.
+  base-url: http://localhost:9999
+  chat-path: /v1/chat
+  connect-timeout: 2s
+  response-timeout: 10s
+  # First-response and idle-stream timeouts share one Reactor operator (see
+  # ChatOrchestrationService) but are independently configurable.
+  first-response-timeout: 5s
+  idle-timeout: 15s
+  max-connections: 500
+  pending-acquire-timeout: 5s
+  max-idle-time: 30s
+  max-life-time: 5m
+  max-in-memory-size: 1MB
+  # Ask the ML Agent to include a suggestedResolution in its payload event. The real
+  # contract frames this as an eval-mode toggle; defaulted on since that content is
+  # clearly valuable for the case manager UI.
+  include-resolutions: true
+
+resilience:
+  circuit-breaker:
+    failure-rate-threshold: 50
+    sliding-window-size: 10
+    wait-duration-in-open-state: 30s
+    permitted-calls-in-half-open-state: 3
+    minimum-number-of-calls: 5
+  bulkhead:
+    max-concurrent-calls: 50
+    max-wait-duration: 0s
+  retry:
+    max-attempts: 3
+    initial-backoff: 200ms
+    max-backoff: 2s
+    jitter-factor: 0.5
+
+chat:
+  # Operationally tunable ceiling, checked at runtime — works alongside (not instead
+  # of) the hard compile-time @Size(max = 4000) backstop on ChatRequest.message.
+  max-message-length: 4000
+  # Absolute ceiling on one ML Agent call's total duration, regardless of activity —
+  # see ChatOrchestrationService#withTotalDeadline.
+  max-stream-duration: 45s
+
+app:
+  mock-ml-agent:
+    # Delay between chunks for a normal ("success") simulated response.
+    chunk-delay-ms: 300
+    # Delay between chunks when the caller triggers the "slow" scenario.
+    slow-chunk-delay-ms: 1500
+
+logging:
+  pattern:
+    # %clr is Spring Boot's built-in Logback color converter (org.springframework.boot.logging.logback.ColorConverter).
+    # It auto-detects a real terminal and no-ops (plain text, no escape codes) when output isn't a console
+    # (e.g. redirected to a file or picked up by a log aggregator), so this is safe for any environment.
+    # %clr(%-5level) with no color argument uses Boot's built-in per-level coloring: ERROR=red, WARN=yellow, else=green.
+    console: "%clr(%d{yyyy-MM-dd HH:mm:ss.SSS}){faint} %clr([%thread]){faint} %clr(%-5level) %clr([corrId=%X{correlationId:-},tenant=%X{tenantId:-},case=%X{caseId:-},conv=%X{conversationId:-},trace=%X{traceId:-},span=%X{spanId:-}]){cyan} %clr(%logger{36}){blue} %clr(-){faint} %msg%n%wEx"
+  level:
+    com.cmbotservice: DEBUG
