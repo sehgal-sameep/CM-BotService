@@ -20,14 +20,19 @@ backend. It does **not** introduce a database, Redis, Kafka, or any other persis
 — nothing here needs one, and the brief that drove this iteration explicitly said not
 to add one "unless a future explicit requirement requires it."
 
-Since the real ML Agent API isn't available yet, all ML functionality is behind
+All ML functionality is behind
 [`MlAgentClient`](../src/main/java/com/cmbotservice/mlagent/MlAgentClient.java), with
 two implementations selected purely by configuration
 (`@ConditionalOnProperty(ml-agent.mode)`, never a runtime `if/else`):
 [`MockMlAgentClient`](../src/main/java/com/cmbotservice/mlagent/MockMlAgentClient.java)
 (default) and
-[`HttpMlAgentClient`](../src/main/java/com/cmbotservice/mlagent/HttpMlAgentClient.java)
-(real, WebClient-based).
+[`GrpcMlAgentClient`](../src/main/java/com/cmbotservice/mlagent/GrpcMlAgentClient.java)
+(real, gRPC-based — service-to-service traffic between two internal services, so gRPC
+was chosen over the originally integrated HTTP+SSE transport; see §6/§7). This is the
+second time the thing behind `MlAgentClient` has changed (placeholder → real HTTP →
+gRPC) without `ChatOrchestrationService`, `ChatController`, or the frontend-facing SSE
+contract needing to change at all — proof the abstraction boundary was drawn in the
+right place.
 
 ## 1. Spring MVC vs WebFlux — superseded decision
 
@@ -75,13 +80,14 @@ ChatOrchestrationService (fully reactive — no thread, no blocking call, anywhe
    → maps each MlAgentStreamEvent → ChatSseEvent → ServerSentEvent
    → onErrorResume: any failure past this point becomes an `error` event, not an HTTP status
    ▼
-MockMlAgentClient / HttpMlAgentClient (impl of MlAgentClient)
+MockMlAgentClient / GrpcMlAgentClient (impl of MlAgentClient)
    → streams Started → Token* → Payload → Done — conversationId/continuation are
      revealed only on Done, never before (see the callout below)
-   → (real client) never buffers the full response — a straight Flux, WebClient → Netty
+   → (real client) never buffers the full response — a straight Flux, gRPC → Netty
 ```
 
-**The one finding that reshaped this design:** the real ML Agent (`POST /v1/chat`,
+**The one finding that reshaped this design:** the real ML Agent (originally
+`POST /v1/chat` over HTTP+SSE, now the same contract's `Chat` RPC over gRPC — see §6,
 built by Thoughtful Labs) never reveals a conversation identifier until its final
 `done` event — there is no early "here's your conversation id" moment. An earlier
 placeholder version of this contract assumed the agent assigned one up front and
@@ -90,10 +96,19 @@ fields at all, and `conversationId`/`continuation` only become authoritative on
 `MlAgentStreamEvent.Done` → `StreamCompleteEvent`. Every SSE event before
 `stream-complete` echoes whatever the *request* supplied (or blank for a new
 conversation) — documented explicitly on `StreamStartEvent` as "not authoritative."
+This finding predates and is independent of the HTTP→gRPC transport swap — it's a
+property of the ML Agent's own contract, not of either transport.
 
 ### The real ML Agent request/response contract
 
-Request body (`POST /v1/chat`):
+Originally documented as a JSON body over `POST /v1/chat` + SSE; now the same fields,
+same semantics, carried as a protobuf message over gRPC's server-streaming `Chat` RPC
+(`src/main/proto/chat_agent.proto` — see §6 for the live schema). Shown here as JSON
+since that's how the contract was first specified and is still the easiest way to read
+it; the field names below map 1:1 to the `.proto` message fields (mostly identical,
+`camelCase` JSON ↔ `snake_case` proto).
+
+Request body (originally `POST /v1/chat`, now the `ChatRequest` proto message):
 
 ```json
 {
@@ -142,15 +157,17 @@ Six SSE event types:
 }
 ```
 
-Two invariants `HttpMlAgentClient` enforces rather than trusts blindly (§16): every
+Two invariants `GrpcMlAgentClient` enforces rather than trusts blindly (§16): every
 `keySignal` must carry ≥1 citation ("a signal without a resolvable citation is a
 defect, not a soft failure"), and `suggestedResolution.mark` is always one of
 `F S G A U Y B T X C` ("the agent never invents a label" — the full set is validated
 permissively since a tenant flag this backend can't see controls whether `X`/`C` are
 in play).
 
-Errors — one unified code space, used either as the HTTP status of the initial POST
-(pre-stream) or as the terminal `error` event's `code` (in-stream):
+Errors — one unified code space, used either as the gRPC status of the initial `Chat`
+call (pre-stream — mapped from the closest-matching `Status.Code`, since gRPC has no
+literal "401") or as the terminal `error` event's `code` (in-stream, sent verbatim by
+the agent as these exact strings):
 
 | Code | Meaning | Retryable |
 |---|---|---|
@@ -165,9 +182,10 @@ Errors — one unified code space, used either as the HTTP status of the initial
 
 **Cancellation:** a client disconnect cancels the subscription; Reactor propagates
 that cancellation upstream through every operator automatically (`.timeout()`'s
-internal timer, `delayElements`' pending timer, the WebClient's HTTP connection) —
-verified live: disconnecting mid-`trigger:slow` logs `SSE_CLIENT_CANCELLED` at INFO
-with no wasted downstream work, no ERROR-level noise.
+internal timer, `delayElements`' pending timer, the gRPC `ClientCallStreamObserver`'s
+`cancel(...)`, actually tearing down the underlying HTTP/2 call — see §6) — verified
+live: disconnecting mid-`trigger:slow` logs `SSE_CLIENT_CANCELLED` at INFO with no
+wasted downstream work, no ERROR-level noise.
 
 ## 3. Component Diagram
 
@@ -188,7 +206,7 @@ with no wasted downstream work, no ERROR-level noise.
                                   │
                        ┌──────────▼─────────────┐
                        │   MlAgentClient (I/F)    │
-                       │  ── MockMlAgentClient     │  ── HttpMlAgentClient (WebClient, pooled)
+                       │  ── MockMlAgentClient     │  ── GrpcMlAgentClient (gRPC ManagedChannel)
                        └──────────┬─────────────┘
                                   │
                        ┌──────────▼─────────────┐
@@ -247,11 +265,11 @@ reject near-instantly and mean the same thing to a client: try later),
 `conversationId`/`continuation` and start over), `NOT_FOUND`/`VALIDATION_ERROR`/
 `INTERNAL_ERROR` (from an explicit `MlAgentRejectedException`, carrying whichever code
 actually fits its underlying 401/403/404/422). `errorMessage` is always a fixed,
-generic, client-safe string — never an exception message, stack trace, or
-WebClient/hostname detail.
+generic, client-safe string — never an exception message, stack trace, or gRPC/
+hostname detail.
 
 The ML Agent's own `tool_call`/`tool_result` events are consumed and logged (DEBUG)
-by `HttpMlAgentClient`/`MockMlAgentClient` directly and **never** become a domain
+by `GrpcMlAgentClient`/`MockMlAgentClient` directly and **never** become a domain
 event or reach this outbound contract at all — per the real contract's own note that
 they're "rendered in the sandbox trace, logged in product," and this service is the
 product, not the sandbox.
@@ -277,47 +295,99 @@ exactly that). `tool_call`/`tool_result` are consumed and logged directly by eac
 **`MockMlAgentClient`** — no threads, no polling loops, nothing that could leak:
 `Flux.concat(Mono.just(Started), tokens.delayElements(delay).index(...), Mono.just(Payload(...)), Mono.just(Done(...)))`
 for success/slow (the mock fabricates a `CaseSummaryPayload` satisfying both
-`HttpMlAgentClient` validations, so this path is exercisable without a real agent);
+`GrpcMlAgentClient` validations, so this path is exercisable without a real agent);
 `Flux.error(...)` after `Started` for `trigger:error`/`trigger:rejected`/
 `trigger:continuation-expired`; `Flux.just(Started, Done(...))` for empty (echoing or
 fabricating `conversationId`/`continuation`, same logic real Done always uses);
 `Flux.concat(Mono.just(Started), Mono.never())` for timeout — the orchestrator's own
 timeout operator is what ends that one, not the mock. `delayElements` natively
 respects cancellation, so a disconnect mid-slow-stream stops everything downstream for
-free.
+free. Entirely transport-agnostic — this class never changed across either transport
+swap (placeholder → HTTP → gRPC).
 
-**`HttpMlAgentClient`** — built from the shared, pooled `WebClient` (§7), consumes the
-real ML Agent's six SSE event types via
-`.bodyToFlux(ParameterizedTypeReference<ServerSentEvent<String>>)` plus a manual,
-per-event-type Jackson deserialization step (each event type has a different JSON
-shape, so one shared record wouldn't fit), never buffers the full response (no
-`collectList()`/`.block()` anywhere — proven by the MockWebServer tests, not just
-claimed), and validates every `payload`/`done`/`token` element (§16) before it
-becomes a domain event. Translates the unified error-code space (§2) into
-`MlAgentRejectedException`/`MlAgentContinuationExpiredException`/
-`MlAgentCommunicationException` both pre-stream (the initial POST's HTTP status) and
-in-stream (the terminal `error` event's `code`).
+**`GrpcMlAgentClient`** — built from the shared `ManagedChannel`/`ChatAgentStub` (§7),
+calls the ML Agent's `Chat` server-streaming RPC
+(`src/main/proto/chat_agent.proto`). grpc-java's generated async stub is
+callback-based (`StreamObserver`), not `Flux`-based, so `grpcEventFlux` bridges the two
+manually via `Flux.create` plus grpc-java's own manual flow-control API
+(`ClientCallStreamObserver#disableAutoInboundFlowControl()`/`request(n)`) — giving real
+backpressure without pulling in a third-party reactive-grpc codegen plugin. One sharp
+edge worth documenting explicitly since it cost real debugging time: `request()`/
+`cancel()` **cannot** be called synchronously inside `ClientResponseObserver#beforeStart(...)`
+— grpc-java throws `IllegalStateException: Not started`, because `beforeStart` runs
+*before* the underlying `ClientCall.start()`. The fix is to stash the
+`ClientCallStreamObserver` reference in `beforeStart` and only wire
+`sink.onRequest(...)`/`sink.onCancel(...)` to it *after* the `stub.chat(...)` call
+returns (which is exactly when `start()` has finished) — see `GrpcMlAgentClient#grpcEventFlux`.
 
-## 7. WebClient & Connection Pool Configuration
+Never buffers the full response (no `collectList()`/`.block()` anywhere — proven by
+the in-process gRPC tests, not just claimed), and validates every `payload` element
+via [`CaseSummaryPayloadValidator`](../src/main/java/com/cmbotservice/mlagent/CaseSummaryPayloadValidator.java)
+(§16, extracted into its own class since it's pure domain-object validation with
+nothing transport-specific about it) before it becomes a domain event. Translates the
+unified error-code space (§2) into `MlAgentRejectedException`/
+`MlAgentContinuationExpiredException`/`MlAgentCommunicationException` both pre-stream
+(the initial call's gRPC `Status.Code`) and in-stream (the terminal `error` event's
+`code` string, read directly off the proto field — unchanged mapping logic from the
+original HTTP integration).
 
-[`MlAgentWebClientConfig`](../src/main/java/com/cmbotservice/config/MlAgentWebClientConfig.java)
-builds **one** shared `WebClient` bean (never per-request) from the **Boot-autoconfigured
-`WebClient.Builder`** (injected, not `WebClient.builder()` directly — the autoconfigured
-builder already carries Boot's Micrometer Observation instrumentation, which is what
-gives the ML Agent call its own trace span for free, see §11/§14). A
-`reactor.netty.resources.ConnectionProvider` sets max connections, pending-acquire
-timeout, max idle time, and max connection lifetime; the `HttpClient` sets connect
-timeout, response timeout, and keep-alive; codecs get an explicit
-`maxInMemorySize`. Only built in `ml-agent.mode: http` (the mock has no network phase
-to pool connections for). All values come from typed, `@Validated`
+**No client-side gRPC deadline is set.** `ChatOrchestrationService`'s existing
+first-response/idle `.timeout()` operator (§8) remains the one, client-agnostic
+timeout authority — a second, competing deadline at the gRPC-stub layer would just be
+a redundant knob measuring the same thing differently.
+
+## 7. gRPC Channel Configuration
+
+[`GrpcChannelConfig`](../src/main/java/com/cmbotservice/config/GrpcChannelConfig.java)
+builds **one** shared `ManagedChannel` bean (never per-request,
+`NettyChannelBuilder.forAddress(host, port)`) and one `ChatAgentGrpc.ChatAgentStub`
+bean from it. Uses **`grpc-netty-shaded`**, not plain `grpc-netty`, specifically so
+this channel's own Netty usage (relocated under
+`io.grpc.netty.shaded.io.netty.*`) can never collide with the reactor-netty version
+WebFlux/the HTTP server already puts on the classpath — two independent Netty
+instances that happen to coexist, rather than one shared (and potentially
+version-mismatched) one. Plaintext only (no TLS) — internal service-to-service
+traffic, and TLS material is infrastructure/secrets-management, explicitly out of
+scope here (same stance already taken for the tracing exporter, §14). Only built in
+`ml-agent.mode: grpc` (the mock has no network phase to open a channel for). All
+values come from typed, `@Validated`
 [`MlAgentProperties`](../src/main/java/com/cmbotservice/config/MlAgentProperties.java)
 — a missing/invalid mandatory value fails startup, not a request.
 
-## 8. Timeout Strategy — five concepts, three enforcement points
+**Build-time codegen**: `src/main/proto/chat_agent.proto` is compiled into
+`ChatAgentGrpc`/message classes by `protobuf-maven-plugin` (+ the `os-maven-plugin`
+build extension, which resolves the right `protoc`/`protoc-gen-grpc-java` native
+binary per OS — verified working on Windows) bound to `generate-sources`, so the
+generated types are on the classpath before `GrpcMlAgentClient` compiles against
+them. One real gotcha hit and fixed here: **Spring Boot 4.1.1's own dependency
+management already pins a specific `io.grpc`/`protobuf-java` version** (for its own
+observability/OTLP support) — declaring an explicit, different `<version>` on these
+dependencies in `pom.xml` caused a split-version classpath (some `io.grpc` artifacts
+at one version, others at another) and a runtime `AbstractMethodError`. Fixed by
+*not* pinning a version on any `io.grpc`/`protobuf-java` dependency at all, letting
+Spring's own managed version apply uniformly — `grpc.version`/`protobuf.version` in
+`pom.xml` now exist only to keep the `protoc`/`protoc-gen-grpc-java` **plugin**
+artifacts (not managed by Spring, since they're build tooling, not a project
+dependency) aligned with whatever version Spring ends up resolving. Also needed
+`javax.annotation:javax.annotation-api` explicitly — the generated code references
+`javax.annotation.Generated`, which was removed from the JDK itself in Java 9+.
 
-- **Connect timeout** / **response-header timeout** — reactor-netty `HttpClient`
-  options in `MlAgentWebClientConfig`. Only meaningful for `HttpMlAgentClient`; the
-  mock has no network phase, documented as such rather than faked.
+**Tracing gap introduced by this swap, documented rather than silently accepted:** the
+previous HTTP integration's ML Agent call got its own Micrometer trace span for free,
+because it was built from Boot's *observation-instrumented* `WebClient.Builder`. The
+gRPC `ManagedChannel` here has no equivalent automatic instrumentation wired up — a
+plain `io.grpc.ClientInterceptor` bridging into Micrometer Observation would be needed
+to restore that span, and building one was out of scope for this transport swap. The
+frontend-facing request still gets its own span (unaffected, that's server-side
+WebFlux instrumentation); what's currently missing is specifically the *outbound* ML
+Agent call's own child span. See README "Known limitations."
+
+## 8. Timeout Strategy
+
+No connect/response-header timeout knob exists at the gRPC layer — no client-side
+gRPC deadline is set anywhere in `GrpcMlAgentClient` at all (a deliberate choice, §6),
+so the timeouts below are the complete story, not one layer of several:
+
 - **First-response timeout** + **idle-stream timeout** — one Reactor operator, two
   independently configurable durations, via the companion-publisher overload:
   `flux.timeout(Mono.delay(firstResponseTimeout), evt -> Mono.delay(idleTimeout))`.
@@ -416,13 +486,14 @@ instead of a clean cancel signal, is filtered via `.onErrorResume(AbortedExcepti
 near the end of the pipeline, same principle as the earlier MVC version's fix for
 `AsyncRequestNotUsableException` — never log a routine disconnect as a server failure).
 
-Backpressure: this is a genuinely end-to-end reactive pipeline — the WebClient's
-demand signals flow to the real ML Agent's TCP read window; the mock's
-`delayElements`/`Flux.concat` construction only ever produces what's been requested.
-That is the backpressure *strategy* to document, not a buffer size to tune: there is
-no `Sinks.many()` or unbounded queue anywhere in this pipeline, confirmed by
-inspection and called out explicitly since that's the one place these guarantees
-quietly break if introduced carelessly.
+Backpressure: this is a genuinely end-to-end reactive pipeline — Reactor demand is
+translated into gRPC's own manual flow-control `request(n)` calls (§6), which flow
+through HTTP/2 all the way to the real ML Agent; the mock's `delayElements`/
+`Flux.concat` construction only ever produces what's been requested. That is the
+backpressure *strategy* to document, not a buffer size to tune: there is no
+`Sinks.many()` or unbounded queue anywhere in this pipeline, confirmed by inspection
+and called out explicitly since that's the one place these guarantees quietly break if
+introduced carelessly.
 
 ## 11. Correlation ID / MDC / Tenant Safety in a Reactive App
 
@@ -507,15 +578,20 @@ come from resilience4j's own binders (§9), not from this class.
 
 ## 14. Tracing & Health/Readiness
 
-`micrometer-tracing-bridge-otel` gives every request, and the ML Agent call, a real
-span (the latter automatic, since the WebClient is built from the observation-
-instrumented `WebClient.Builder` — see §7) — confirmed indirectly via
-`http.server.requests` metrics in `/actuator/prometheus`, which only exist because an
-observation is being created per request. No exporter is configured — that's
-infrastructure, explicitly out of scope for this task. **Not yet working:** the
-resulting trace/span IDs are not currently reaching MDC/logs — see §11's note on this;
-it's a separate, still-open problem from the `tenantId`/`caseId`/`conversationId`
-bridging fixed there.
+`micrometer-tracing-bridge-otel` gives every incoming frontend request a real span
+(server-side WebFlux instrumentation, unaffected by the ML Agent transport) —
+confirmed indirectly via `http.server.requests` metrics in `/actuator/prometheus`,
+which only exist because an observation is being created per request. **The ML Agent
+call itself no longer automatically gets its own child span** — see §7's "tracing gap"
+callout: the previous WebClient-based integration got this for free from Boot's
+observation-instrumented `WebClient.Builder`; the gRPC `ManagedChannel` has no
+equivalent instrumentation wired up, and adding a Micrometer-Observation-aware
+`ClientInterceptor` was out of scope for this transport swap. No exporter is
+configured either way — that's infrastructure, explicitly out of scope for this task.
+**Also not yet working, a separate and still-open problem:** the frontend request's
+own trace/span IDs are not currently reaching MDC/logs — see §11's note on this; it's
+unrelated to the tracing gap above (which is about a *missing span*, not a missing MDC
+bridge for an existing one).
 
 `management.endpoint.health.group.readiness.include: readinessState` explicitly
 excludes the circuit-breaker health indicator from the readiness group — verified
@@ -541,8 +617,9 @@ without a redeploy). `requestId` optional, propagated to `MlAgentRequest`, logge
 deduplicated anywhere (no store to dedupe against — by design).
 
 `spring.codec.max-in-memory-size` bounds the server-side request body; a separately
-configured limit on the ML-agent `WebClient` (§7) bounds its response buffering — two
-different knobs for two different directions. No speculative `metadata` map was added
+configured limit on the gRPC channel (`grpc-max-inbound-message-size`, §7) bounds its
+response buffering — two different knobs for two different directions. No speculative
+`metadata` map was added
 to the request contract just to have size-limit annotations to attach to it — nothing
 in the current contract needs one.
 
@@ -555,16 +632,18 @@ absorbed here, not propagated.
 
 ## 16. ML Agent Response Validation
 
-`HttpMlAgentClient` validates every decoded `ServerSentEvent<String>`: an unrecognized
-`event` name, a missing required field for that event type (e.g. `token` without
-`delta`), or a malformed JSON body all become `MlAgentMalformedResponseException`
-(non-retryable, §9) instead of an uncontrolled `NullPointerException`/
-`ClassCastException` escaping the mapping stage. Two additional, contract-specific
-invariants are enforced on every `payload` event before it becomes a domain event
-(§2): every `keySignal` must carry at least one citation, and
-`suggestedResolution.mark` — when present — must be one of the known resolution codes
-(`F S G A U Y B T X C`). Both violations also become `MlAgentMalformedResponseException`
-— proven by dedicated MockWebServer tests, not just asserted.
+`GrpcMlAgentClient` validates every decoded `ChatEvent`: an unset `oneof` case (no
+event type at all — the gRPC/protobuf analog of "unrecognized event name," since
+protobuf's strong typing already rules out a malformed shape at the wire-format level)
+becomes `MlAgentMalformedResponseException` (non-retryable, §9) instead of an
+uncontrolled `NullPointerException` escaping the mapping stage. Two additional,
+contract-specific invariants are enforced on every `payload` event before it becomes a
+domain event (§2), via the shared
+[`CaseSummaryPayloadValidator`](../src/main/java/com/cmbotservice/mlagent/CaseSummaryPayloadValidator.java):
+every `keySignal` must carry at least one citation, and `suggestedResolution.mark` —
+when present — must be one of the known resolution codes (`F S G A U Y B T X C`).
+Both violations also become `MlAgentMalformedResponseException` — proven by dedicated
+in-process gRPC server tests, not just asserted.
 
 ## 17. Security Hardening (code-level; no gateway/infra here)
 
@@ -572,9 +651,9 @@ invariants are enforced on every `payload` event before it becomes a domain even
   `X-User-Id` header trust in the POC implementation is an explicit stand-in for a
   real authentication principal (JWT/session), swappable with no controller/service
   change.
-- No stack trace, WebClient internal detail, or hostname ever reaches a response body
-  — every error path funnels through either `GlobalExceptionHandler` (pre-stream) or
-  the fixed `errorMessage` strings in `ChatOrchestrationService#toErrorEvent`
+- No stack trace, gRPC/channel internal detail, or hostname ever reaches a response
+  body — every error path funnels through either `GlobalExceptionHandler` (pre-stream)
+  or the fixed `errorMessage` strings in `ChatOrchestrationService#toErrorEvent`
   (in-stream).
 - Correlation IDs are logged; auth-adjacent header values are not.
 - Content-type/body validation is WebFlux's own default behavior (confirmed, not
@@ -585,7 +664,7 @@ invariants are enforced on every `payload` event before it becomes a domain even
 All tunables are typed, `@Validated` `@ConfigurationProperties` records
 (`MlAgentProperties`, `ResilienceProperties`, `ChatProperties`) — a missing or invalid
 mandatory value fails application startup, never surfaces as a mysterious runtime
-failure on the first request. `ml-agent.mode: mock|http` selects the `MlAgentClient`
+failure on the first request. `ml-agent.mode: mock|grpc` selects the `MlAgentClient`
 bean via `@ConditionalOnProperty` on each implementation — orchestration code depends
 only on the interface, never a mode check.
 
@@ -594,7 +673,7 @@ only on the interface, never a mode check.
 ```
 com.cmbotservice
  ├─ config/     MlAgentProperties, ResilienceProperties, ChatProperties,
- │               MlAgentWebClientConfig, ResilienceConfig, OpenApiConfig
+ │               GrpcChannelConfig, ResilienceConfig, OpenApiConfig
  ├─ context/    RequestContext, RequestContextResolver (+HeaderBased impl),
  │               RequestHeaders, CorrelationIdFilter (WebFilter), MdcContext
  ├─ web/
@@ -603,7 +682,9 @@ com.cmbotservice
  │   └─ advice/      GlobalExceptionHandler
  ├─ service/    ChatOrchestrationService, ChatMetrics
  ├─ mlagent/    MlAgentClient, MlAgentRequest, MlAgentStreamEvent, CaseSummaryPayload,
- │               MockMlAgentClient, MockScenario, HttpMlAgentClient
+ │               CaseSummaryPayloadValidator, MockMlAgentClient, MockScenario,
+ │               GrpcMlAgentClient, grpc.v1/ (generated: ChatAgentGrpc, ChatRequest,
+ │               ChatEvent, Token, ToolCall, ToolResult, Payload, Done, Error)
  ├─ sse/        ChatSseEvent, SseEventType, SseEvents, StreamStartEvent,
  │               MessageChunkEvent, CaseSummaryEvent, StreamCompleteEvent, StreamErrorEvent
  └─ common/     ErrorCode, MlAgentException, MlAgentTimeoutException,
@@ -622,13 +703,15 @@ warned against.
 
 ## Verified end-to-end
 
-Full test suite (43 tests: unit, `StepVerifier`/virtual-time, MockWebServer,
-`RestTestClient` against a real random port) green, including the real ML Agent
-contract's request body shape, all six SSE event types, both `payload` invariant
-validations, pre-stream and in-stream error-code mapping, and `continuation`/
-`conversationId` round-tripping across two requests. Live curl verification: success/
-slow/error/empty/rejected/continuation-expired scenarios; blank/missing-field validation → 400; circuit breaker
-forced open via repeated `trigger:error` → subsequent request rejected instantly with
+Full test suite (49 tests: unit, `StepVerifier`/virtual-time, an in-process gRPC
+server (the gRPC analog of MockWebServer), `RestTestClient` against a real random
+port) green, including the ML Agent contract's request field mapping over gRPC, all
+six event types, both `payload` invariant validations, an unset-`oneof` malformed
+case, gRPC `Status.Code` → exception mapping, in-stream `error` event code mapping,
+and `continuation`/`conversationId` round-tripping across two requests. Live curl
+verification: success/slow/error/empty/rejected/continuation-expired scenarios;
+blank/missing-field validation → 400; circuit breaker forced open via repeated
+`trigger:error` → subsequent request rejected instantly with
 `CONCURRENCY_LIMIT_REACHED`, mock never re-invoked, `/actuator/health/readiness`
 stays UP throughout; mid-stream client disconnect → `SSE_CLIENT_CANCELLED` at INFO,
 zero ERROR-level noise; `/actuator/health`, `/actuator/health/{liveness,readiness}`,
@@ -636,4 +719,9 @@ zero ERROR-level noise; `/actuator/health`, `/actuator/health/{liveness,readines
 `grep -rn "\.block()\|Thread.sleep" src/main/java` sanity check returns zero hits in
 production code; `tenantId`/`caseId`/`conversationId` MDC fields populating correctly
 end-to-end after the `Hooks.enableAutomaticContextPropagation()` fix (§11) —
-re-verified with a fresh app start and real curl calls, not just the unit tests.
+re-verified with a fresh app start and real curl calls, not just the unit tests. App
+boot re-verified in both `ml-agent.mode: mock` (full chat flow works end-to-end) and
+`ml-agent.mode: grpc` (channel/stub beans construct cleanly; with no real agent
+running, a chat request correctly surfaces `ML_AGENT_UNAVAILABLE` rather than hanging
+or crashing — proving the gRPC error-mapping path end-to-end even without a live
+agent).

@@ -7,7 +7,7 @@ import reactor.core.publisher.Flux;
  * <p>
  * This is the one seam the whole application depends on for ML functionality —
  * controllers and orchestration logic depend only on this interface (Dependency
- * Inversion). {@link MockMlAgentClient} and {@link HttpMlAgentClient} are the two
+ * Inversion). {@link MockMlAgentClient} and {@code GrpcMlAgentClient} are the two
  * implementations, selected via the {@code ml-agent.mode} property
  * ({@code @ConditionalOnProperty} on each — see either class), never a runtime
  * {@code if/else} in orchestration code.

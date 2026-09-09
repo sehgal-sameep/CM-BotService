@@ -30,6 +30,17 @@
 		<java.version>21</java.version>
 		<springdoc.version>3.1.0</springdoc.version>
 		<resilience4j.version>2.4.0</resilience4j.version>
+		<!-- Used only for the protoc/protoc-gen-grpc-java build-time plugin artifacts
+		     below; the io.grpc/protobuf-java runtime dependencies themselves are left
+		     unversioned so Spring Boot's own dependency management supplies a single,
+		     consistent version across the whole classpath (it manages a newer io.grpc/
+		     protobuf-java than these already, e.g. for OTLP gRPC export) — pinning our
+		     own version here previously caused a split-version classpath and an
+		     AbstractMethodError at runtime. Keep these two in sync with whatever
+		     `mvn dependency:tree -Dincludes=io.grpc` / `-Dincludes=com.google.protobuf`
+		     reports as the actually-resolved version. -->
+		<grpc.version>1.83.1</grpc.version>
+		<protobuf.version>4.35.1</protobuf.version>
 	</properties>
 	<dependencies>
 		<dependency>
@@ -69,6 +80,36 @@
 			<artifactId>micrometer-tracing-bridge-otel</artifactId>
 		</dependency>
 
+		<!-- gRPC transport to the ML Agent (GrpcMlAgentClient). grpc-netty-shaded (not
+		     plain grpc-netty) deliberately, to avoid a Netty version clash with the
+		     reactor-netty already on the classpath via WebFlux. No explicit <version> on
+		     any io.grpc/protobuf-java dependency here — see the grpc.version/
+		     protobuf.version property comment in <properties> for why. -->
+		<dependency>
+			<groupId>io.grpc</groupId>
+			<artifactId>grpc-netty-shaded</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>io.grpc</groupId>
+			<artifactId>grpc-protobuf</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>io.grpc</groupId>
+			<artifactId>grpc-stub</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>com.google.protobuf</groupId>
+			<artifactId>protobuf-java</artifactId>
+		</dependency>
+		<!-- Generated gRPC service code (ChatAgentGrpc) references javax.annotation.Generated,
+		     which was removed from the JDK itself in Java 9+ — needs to come from a
+		     library on Java 21. -->
+		<dependency>
+			<groupId>javax.annotation</groupId>
+			<artifactId>javax.annotation-api</artifactId>
+			<version>1.3.2</version>
+		</dependency>
+
 		<dependency>
 			<groupId>org.projectlombok</groupId>
 			<artifactId>lombok</artifactId>
@@ -84,19 +125,55 @@
 			<artifactId>reactor-test</artifactId>
 			<scope>test</scope>
 		</dependency>
+		<!-- In-process gRPC server/channel for GrpcMlAgentClientTest — the gRPC analog
+		     of MockWebServer. -->
 		<dependency>
-			<groupId>com.squareup.okhttp3</groupId>
-			<artifactId>mockwebserver</artifactId>
-			<version>5.3.2</version>
+			<groupId>io.grpc</groupId>
+			<artifactId>grpc-inprocess</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>io.grpc</groupId>
+			<artifactId>grpc-testing</artifactId>
 			<scope>test</scope>
 		</dependency>
 	</dependencies>
 
 	<build>
+		<extensions>
+			<!-- Resolves the per-OS protoc/protoc-gen-grpc-java binaries below (works on
+			     Windows/macOS/Linux alike) — the standard companion to protobuf-maven-plugin. -->
+			<extension>
+				<groupId>kr.motd.maven</groupId>
+				<artifactId>os-maven-plugin</artifactId>
+				<version>1.7.1</version>
+			</extension>
+		</extensions>
 		<plugins>
 			<plugin>
 				<groupId>org.springframework.boot</groupId>
 				<artifactId>spring-boot-maven-plugin</artifactId>
+			</plugin>
+			<!-- Compiles src/main/proto/*.proto into Java message classes + the gRPC
+			     ChatAgent stub/service base, bound to generate-sources so they're on the
+			     compile classpath before GrpcMlAgentClient is compiled. -->
+			<plugin>
+				<groupId>org.xolstice.maven.plugins</groupId>
+				<artifactId>protobuf-maven-plugin</artifactId>
+				<version>0.6.1</version>
+				<configuration>
+					<protocArtifact>com.google.protobuf:protoc:${protobuf.version}:exe:${os.detected.classifier}</protocArtifact>
+					<pluginId>grpc-java</pluginId>
+					<pluginArtifact>io.grpc:protoc-gen-grpc-java:${grpc.version}:exe:${os.detected.classifier}</pluginArtifact>
+				</configuration>
+				<executions>
+					<execution>
+						<goals>
+							<goal>compile</goal>
+							<goal>compile-custom</goal>
+						</goals>
+					</execution>
+				</executions>
 			</plugin>
 			<plugin>
 				<groupId>org.apache.maven.plugins</groupId>

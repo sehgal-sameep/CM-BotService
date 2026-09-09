@@ -83,9 +83,11 @@ skip to §7 if you only care about what you send/receive.
 
 ## 4. Step 2 — What this backend forwards to the ML Agent
 
-This backend re-shapes your request into the ML Agent's own contract
-(`POST /v1/chat`) before forwarding it. You never see this directly, but it's useful
-to know the mapping if something looks wrong end-to-end:
+This backend re-shapes your request into the ML Agent's own contract before
+forwarding it. This hop is gRPC, not another HTTP call, but the field mapping is
+identical either way — shown here as JSON since that's the simplest way to read it.
+You never see this directly, but it's useful to know the mapping if something looks
+wrong end-to-end:
 
 ```json
 {

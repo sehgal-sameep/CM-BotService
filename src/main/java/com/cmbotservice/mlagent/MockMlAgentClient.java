@@ -155,9 +155,9 @@ public class MockMlAgentClient implements MlAgentClient {
 
     /**
      * Fabricates a structured payload that satisfies both invariants
-     * {@link HttpMlAgentClient} validates on a real response — every key signal
-     * carries a citation, and the resolution mark is one of the known codes — so the
-     * mock exercises the exact same downstream path a real response would.
+     * {@link CaseSummaryPayloadValidator} enforces on a real response — every key
+     * signal carries a citation, and the resolution mark is one of the known codes —
+     * so the mock exercises the exact same downstream path a real response would.
      */
     private static CaseSummaryPayload buildPayload(String answer) {
         String citationId = "MOCK-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);

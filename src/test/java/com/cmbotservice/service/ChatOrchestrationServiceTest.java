@@ -44,10 +44,8 @@ class ChatOrchestrationServiceTest {
     private final ChatMetrics metrics = new ChatMetrics(new SimpleMeterRegistry());
 
     private final MlAgentProperties mlAgentProperties = new MlAgentProperties(
-            "mock", "http://localhost", "/chat",
-            Duration.ofSeconds(2), Duration.ofSeconds(10),
+            "mock", "localhost", 9090,
             Duration.ofMillis(300), Duration.ofMillis(300),
-            10, Duration.ofSeconds(1), Duration.ofSeconds(30), Duration.ofMinutes(5),
             DataSize.ofKilobytes(256), true);
 
     private ChatOrchestrationService newService(CircuitBreaker cb, Bulkhead bh, int maxRetryAttempts,

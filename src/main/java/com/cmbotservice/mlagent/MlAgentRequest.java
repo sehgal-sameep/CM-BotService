@@ -7,11 +7,11 @@ package com.cmbotservice.mlagent;
  * between our orchestration logic and whatever the real ML Agent turns out to be — it
  * must remain stable across {@link MlAgentClient} implementations.
  * <p>
- * This is <b>not</b> the literal wire body sent to the real ML Agent — the real
- * {@code POST /v1/chat} contract only wants a subset of these fields, shaped
- * differently (a nested {@code context} object, an {@code options} object, etc.).
- * {@link HttpMlAgentClient} owns that translation; this record is the stable internal
- * contract every {@link MlAgentClient} implementation (mock or real) is built against.
+ * This is <b>not</b> the literal wire message sent to the real ML Agent — the real
+ * {@code Chat} RPC only wants a subset of these fields, shaped differently (a nested
+ * {@code context} message, an {@code options} message, etc.). {@code GrpcMlAgentClient}
+ * owns that translation; this record is the stable internal contract every
+ * {@link MlAgentClient} implementation (mock or real) is built against.
  * <p>
  * This backend is a stateless pass-through: it does not assemble or send conversation
  * history. Follow-up turns need prior context via exactly one of {@code continuation}

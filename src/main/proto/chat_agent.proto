@@ -1,0 +1,166 @@
+syntax = "proto3";
+
+// Live contract for the ML Agent's `Chat` RPC — server-to-server, gRPC transport.
+// A 1:1 translation of Thoughtful Labs' documented request/response contract
+// (originally `POST /v1/chat` over HTTP + SSE, see ../../docs/ARCHITECTURE.md §2):
+// nothing here was invented, no field was renamed without a comment explaining why.
+// Generated Java sources land under target/generated-sources/protobuf — see
+// GrpcMlAgentClient for the mapping to/from this backend's internal
+// MlAgentRequest/MlAgentStreamEvent domain types.
+
+package cmbotservice.mlagent.v1;
+
+option java_package = "com.cmbotservice.mlagent.grpc.v1";
+option java_multiple_files = true;
+
+service ChatAgent {
+  // One call in, a stream of events back out — the same shape as the original
+  // POST /v1/chat + SSE contract, just server-streaming over gRPC/HTTP2 instead of SSE.
+  rpc Chat(ChatRequest) returns (stream ChatEvent);
+}
+
+message ChatRequest {
+  // Resumption tokens. The real contract's own precedence is
+  // history > continuation > conversation_id; `history` is intentionally NOT
+  // represented here at all — it's documented as "eval only," and this backend is
+  // stateless (see MlAgentRequest's javadoc), so it never has one to send.
+  optional string continuation = 1;
+  optional string conversation_id = 2;
+
+  // Fixed to "case_manager" by this backend today; "policy_manager" is the contract's
+  // other known surface. Left as a plain string rather than an enum on purpose — a
+  // proto enum here would require this backend to know the agent's full surface list
+  // up front, which is exactly the kind of coupling a string avoids.
+  string surface = 3;
+
+  string message = 4;
+
+  message Context {
+    string case_id = 1;
+    optional string end_user_id = 2;
+  }
+  Context context = 5;
+
+  // Sandbox-path auth (what this backend uses today — no real auth infra exists yet,
+  // see ../../README.md "Known limitations").
+  string tenant_id = 6;
+
+  // Product-path auth. Included here even though this backend doesn't populate it
+  // yet, since the schema is the right place to plan for it ahead of time.
+  optional string context_token = 7;
+
+  message Options {
+    bool include_resolutions = 1;
+  }
+  Options options = 8;
+}
+
+// Mirrors the real contract's six SSE event types 1:1 (../../docs/ARCHITECTURE.md §2's
+// event table) via a oneof — gRPC's native way to express "exactly one of these
+// shapes," the same idea as the sealed MlAgentStreamEvent interface in this backend's
+// Java code.
+message ChatEvent {
+  oneof event {
+    Token token = 1;
+    ToolCall tool_call = 2;
+    ToolResult tool_result = 3;
+    Payload payload = 4;
+    Done done = 5;
+    Error error = 6;
+  }
+}
+
+message Token {
+  string delta = 1;
+}
+
+// "Rendered in the sandbox trace, logged in product" per the real contract — this
+// backend consumes and logs these without ever forwarding them to the frontend (see
+// GrpcMlAgentClient).
+message ToolCall {
+  string id = 1;
+  string name = 2;
+  // The real contract's `args` is an open, tool-specific JSON object with no fixed
+  // shape — kept as a JSON-encoded string rather than a protobuf Struct/Any so this
+  // schema doesn't need to change every time a new tool is added on the agent side.
+  string args_json = 3;
+}
+
+message ToolResult {
+  string id = 1;
+  int64 ms = 2;
+  int64 row_count = 3;
+  bool ok = 4;
+}
+
+message Payload {
+  string answer = 1;
+
+  message Summary {
+    string narrative = 1;
+
+    message KeySignal {
+      string signal = 1;
+      string severity = 2;
+      // Must be non-empty — this backend rejects a KeySignal with zero citations
+      // today (see ../../docs/ARCHITECTURE.md §16); that validation carries over
+      // unchanged (see CaseSummaryPayloadValidator).
+      repeated string citations = 3;
+    }
+    repeated KeySignal key_signals = 2;
+
+    message Entity {
+      string type = 1;
+      string value = 2;
+      repeated string events = 3;
+    }
+    repeated Entity entities = 3;
+
+    message TimelineEvent {
+      string at = 1;       // ISO-8601 timestamp, kept as a string like the JSON original
+      string event_id = 2;
+      string what = 3;
+    }
+    repeated TimelineEvent timeline = 4;
+  }
+  Summary summary = 2;
+
+  message SuggestedResolution {
+    // Kept as a string, not a proto enum: the known set is F/S/G/A/U/Y/B/T, plus X/C
+    // behind a tenant flag this backend can't see. A proto3 enum would either reject
+    // a code gated behind a flag this schema doesn't know about, or silently coerce
+    // it to the zero value — this backend validates the string against the known set
+    // in code instead (see CaseSummaryPayloadValidator), same as it did over HTTP.
+    string mark = 1;
+    string label = 2;
+    string confidence = 3;
+    string rationale = 4;
+  }
+  SuggestedResolution suggested_resolution = 3;
+
+  message Citation {
+    string id = 1;
+    string source = 2;
+    repeated string fields = 3;
+  }
+  repeated Citation citations = 4;
+}
+
+message Done {
+  string conversation_id = 1;
+  string continuation = 2;
+  int64 latency_ms = 3;
+  int64 tokens_in = 4;
+  int64 tokens_out = 5;
+}
+
+message Error {
+  // Kept as a string, matching the real contract's own codes exactly
+  // ("401","403","404","422","429","503","4221","4222" — see
+  // ../../docs/ARCHITECTURE.md §2's error table), not an int32: 4221/4222 aren't real
+  // HTTP statuses, and mixing them into one int space with true HTTP statuses would
+  // imply a relationship between them that doesn't exist.
+  string code = 1;
+  string message = 2;
+  bool retryable = 3;
+}

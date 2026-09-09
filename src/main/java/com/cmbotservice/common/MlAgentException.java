@@ -2,7 +2,7 @@ package com.cmbotservice.common;
 
 /**
  * Base type for every failure originating from ML Agent communication. Deliberately
- * left open (not {@code sealed}) — an {@code HttpMlAgentClient} or any future
+ * left open (not {@code sealed}) — {@code GrpcMlAgentClient} or any future
  * {@code MlAgentClient} implementation may need to introduce further subtypes without
  * changing this class.
  */

@@ -41,23 +41,19 @@ management:
       probability: 1.0
 
 ml-agent:
-  # "mock" (default, MockMlAgentClient) or "http" (HttpMlAgentClient, real WebClient calls).
+  # "mock" (default, MockMlAgentClient) or "grpc" (GrpcMlAgentClient, real gRPC calls).
   mode: mock
-  # Only used in mode: http — still required (non-blank) because these properties are
-  # bound and validated at startup regardless of which client bean ends up active.
-  base-url: http://localhost:9999
-  chat-path: /v1/chat
-  connect-timeout: 2s
-  response-timeout: 10s
+  # Only used in mode: grpc — still required (non-blank/positive) because these
+  # properties are bound and validated at startup regardless of which client bean ends
+  # up active.
+  grpc-host: localhost
+  grpc-port: 9090
   # First-response and idle-stream timeouts share one Reactor operator (see
-  # ChatOrchestrationService) but are independently configurable.
+  # ChatOrchestrationService) but are independently configurable. No separate gRPC
+  # deadline is configured — this is the one, client-agnostic timeout authority.
   first-response-timeout: 5s
   idle-timeout: 15s
-  max-connections: 500
-  pending-acquire-timeout: 5s
-  max-idle-time: 30s
-  max-life-time: 5m
-  max-in-memory-size: 1MB
+  grpc-max-inbound-message-size: 1MB
   # Ask the ML Agent to include a suggestedResolution in its payload event. The real
   # contract frames this as an eval-mode toggle; defaulted on since that content is
   # clearly valuable for the case manager UI.

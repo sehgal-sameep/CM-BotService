@@ -16,8 +16,8 @@ import java.time.Duration;
  * fails application boot rather than surfacing as a confusing failure on the first
  * request.
  * <p>
- * {@code baseUrl}/{@code chatPath} are only meaningful when {@code mode: http}
- * ({@link com.cmbotservice.mlagent.HttpMlAgentClient} active); they still require a
+ * {@code grpcHost}/{@code grpcPort} are only meaningful when {@code mode: grpc}
+ * ({@link com.cmbotservice.mlagent.GrpcMlAgentClient} active); they still require a
  * placeholder value in {@code mode: mock} since this whole properties object is bound
  * and validated regardless of which client bean ends up active.
  */
@@ -25,20 +25,14 @@ import java.time.Duration;
 @Validated
 public record MlAgentProperties(
 
-        @Pattern(regexp = "mock|http", message = "must be 'mock' or 'http'")
+        @Pattern(regexp = "mock|grpc", message = "must be 'mock' or 'grpc'")
         String mode,
 
         @NotBlank
-        String baseUrl,
+        String grpcHost,
 
-        @NotBlank
-        String chatPath,
-
-        @NotNull
-        Duration connectTimeout,
-
-        @NotNull
-        Duration responseTimeout,
+        @Positive
+        int grpcPort,
 
         @NotNull
         Duration firstResponseTimeout,
@@ -46,20 +40,8 @@ public record MlAgentProperties(
         @NotNull
         Duration idleTimeout,
 
-        @Positive
-        int maxConnections,
-
         @NotNull
-        Duration pendingAcquireTimeout,
-
-        @NotNull
-        Duration maxIdleTime,
-
-        @NotNull
-        Duration maxLifeTime,
-
-        @NotNull
-        DataSize maxInMemorySize,
+        DataSize grpcMaxInboundMessageSize,
 
         /**
          * Whether to ask the ML Agent to include a {@code suggestedResolution} in its
@@ -70,7 +52,7 @@ public record MlAgentProperties(
         boolean includeResolutions
 ) {
 
-    public boolean isHttpMode() {
-        return "http".equals(mode);
+    public boolean isGrpcMode() {
+        return "grpc".equals(mode);
     }
 }

@@ -12,7 +12,7 @@ package com.cmbotservice.mlagent;
  * The real ML Agent's own {@code tool_call}/{@code tool_result} events are
  * deliberately <b>not</b> represented here at all — per the contract, they're
  * "rendered in the sandbox trace, logged in product." This service is the product,
- * not the sandbox, so {@link HttpMlAgentClient}/{@link MockMlAgentClient} consume and
+ * not the sandbox, so {@code GrpcMlAgentClient}/{@link MockMlAgentClient} consume and
  * log them directly and never turn them into a domain event; nothing downstream of
  * this interface is meant to see them.
  * <p>
