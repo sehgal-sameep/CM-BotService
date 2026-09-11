@@ -6,8 +6,8 @@ import com.cmbotservice.common.MlAgentMalformedResponseException;
  * Enforces the two invariants the real ML Agent contract states but doesn't guarantee
  * for free: every key signal carries a citation ("a signal without a resolvable
  * citation is a defect, not a soft failure"), and {@code suggestedResolution.mark} —
- * when present — is one of the known platform resolution codes ("the agent never
- * invents a label"). Extracted as its own class (rather than living inline in
+ * when present — is one of the known resolution enum names ("the agent never invents
+ * one"). Extracted as its own class (rather than living inline in
  * {@link GrpcMlAgentClient}) since it's pure, transport-independent logic operating on
  * the domain {@link CaseSummaryPayload}, not on any wire format.
  */

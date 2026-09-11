@@ -116,7 +116,7 @@ Request body (originally `POST /v1/chat`, now the `ChatRequest` proto message):
   "conversationId": null,
   "surface": "case_manager",
   "message": "Summarise this case",
-  "context": { "caseId": "1234", "endUserId": "gadi5" },
+  "context": { "caseId": "1234", "endUserId": "<sha256-base64>" },
   "tenantId": "shcuat1b",
   "options": { "includeResolutions": true }
 }
@@ -129,6 +129,13 @@ against this service's stateless design; `contextToken` has no real auth/JWT
 infrastructure behind it yet (documented gap, not a bug). Per the contract's own
 guidance, this service never chooses between `continuation`/`conversationId` — it
 just echoes back whatever the previous `done` event returned, verbatim.
+
+`context.endUserId` is documented as a SHA-256 hash, base64-encoded — **who computes
+that hash is not specified by the contract and is not yet resolved.** This backend
+forwards whatever `ChatRequest.endUserId` supplies untouched (no hashing logic exists
+here); if the frontend/caller is expected to send a raw value for this backend to
+hash before forwarding, that's a gap, not an assumption we've silently made — flagged
+explicitly rather than guessed at.
 
 Six SSE event types:
 
@@ -152,17 +159,30 @@ Six SSE event types:
     "entities": [{ "type": "ip", "value": "100.100.100.100", "events": ["7ff7-..._TRX"] }],
     "timeline": [{ "at": "2022-08-10T14:14:02Z", "eventId": "7ff7-..._TRX", "what": "..." }]
   },
-  "suggestedResolution": { "mark": "S", "label": "Suspected Fraud", "confidence": "medium", "rationale": "..." },
-  "citations": [{ "id": "7ff7-..._TRX", "source": "APP_EVENT_LOG", "fields": ["risk_score"] }]
+  "suggestedResolution": { "mark": "SUSPECTED_FRAUD", "confidence": "medium", "rationale": "..." },
+  "citations": [{ "id": "7ff7-..._TRX", "source": "AgenticGetCase.events[].decision", "fields": ["ri..."] }]
 }
 ```
 
 Two invariants `GrpcMlAgentClient` enforces rather than trusts blindly (§16): every
 `keySignal` must carry ≥1 citation ("a signal without a resolvable citation is a
-defect, not a soft failure"), and `suggestedResolution.mark` is always one of
-`F S G A U Y B T X C` ("the agent never invents a label" — the full set is validated
-permissively since a tenant flag this backend can't see controls whether `X`/`C` are
-in play).
+defect, not a soft failure"), and `suggestedResolution.mark` is always one of the
+resolution enum names `CONFIRMED_FRAUD | SUSPECTED_FRAUD | CONFIRMED_GENUINE |
+ASSUMED_GENUINE | UNKNOWN` ("the agent never invents one"). `ANY` is documented as
+filter-only and must never be emitted, so its presence is treated as a contract
+violation, not accepted. The *single-character* codes (`F S G A U Y B T`) are a
+different system's (`APP_EVENT_UPDATE.CUSTOM_MARK`) internal representation and never
+appear on this interface — an important correction from an earlier revision of this
+doc, which had (incorrectly, per the now-clarified contract) assumed `mark` used those
+single-character codes directly, with `X`/`C` gated behind a tenant flag. That
+tenant-flag reasoning no longer applies; the known set above is fixed and unconditional.
+
+The `suggestedResolution` example above also no longer shows a `label` field
+alongside `mark`/`confidence`/`rationale` — **unclear whether `label` was dropped from
+the contract or just omitted from this particular example.** `CaseSummaryPayload`
+still carries it (unvalidated, forwarded as-is if present, blank if not) rather than
+removing it outright, since deleting a field on a guess risks silently dropping real
+data if the agent still sends it.
 
 Errors — one unified code space, used either as the gRPC status of the initial `Chat`
 call (pre-stream — mapped from the closest-matching `Status.Code`, since gRPC has no
@@ -624,7 +644,7 @@ to the request contract just to have size-limit annotations to attach to it — 
 in the current contract needs one.
 
 DTO boundary: `ChatRequest` (frontend) → `MlAgentRequest` (ML Agent, built explicitly
-by `ChatOrchestrationService`, never the same object) → `MlAgentStreamEvent` (ML
+by `ChatOrchestrationServiceImpl`, never the same object) → `MlAgentStreamEvent` (ML
 Agent's response shape) → `ChatSseEvent`/`ServerSentEvent` (frontend again). Four
 distinct types, one deliberate mapping step at each boundary — the frontend is never
 exposed to the ML Agent's contract directly, so ML Agent contract changes are
@@ -641,9 +661,11 @@ contract-specific invariants are enforced on every `payload` event before it bec
 domain event (§2), via the shared
 [`CaseSummaryPayloadValidator`](../src/main/java/com/cmbotservice/mlagent/CaseSummaryPayloadValidator.java):
 every `keySignal` must carry at least one citation, and `suggestedResolution.mark` —
-when present — must be one of the known resolution codes (`F S G A U Y B T X C`).
-Both violations also become `MlAgentMalformedResponseException` — proven by dedicated
-in-process gRPC server tests, not just asserted.
+when present — must be one of the known resolution enum names
+(`CONFIRMED_FRAUD | SUSPECTED_FRAUD | CONFIRMED_GENUINE | ASSUMED_GENUINE | UNKNOWN`;
+`ANY` and the legacy single-character codes are both rejected as violations, not
+accepted — see §2). Both violations also become `MlAgentMalformedResponseException` —
+proven by dedicated in-process gRPC server tests, not just asserted.
 
 ## 17. Security Hardening (code-level; no gateway/infra here)
 

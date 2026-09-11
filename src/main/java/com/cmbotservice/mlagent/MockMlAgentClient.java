@@ -156,8 +156,9 @@ public class MockMlAgentClient implements MlAgentClient {
     /**
      * Fabricates a structured payload that satisfies both invariants
      * {@link CaseSummaryPayloadValidator} enforces on a real response — every key
-     * signal carries a citation, and the resolution mark is one of the known codes —
-     * so the mock exercises the exact same downstream path a real response would.
+     * signal carries a citation, and the resolution mark is one of the known enum
+     * names — so the mock exercises the exact same downstream path a real response
+     * would.
      */
     private static CaseSummaryPayload buildPayload(String answer) {
         String citationId = "MOCK-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
@@ -169,7 +170,7 @@ public class MockMlAgentClient implements MlAgentClient {
         CaseSummaryPayload.Summary summary = new CaseSummaryPayload.Summary(
                 answer, List.of(signal), List.of(entity), List.of(timelineEvent));
         CaseSummaryPayload.SuggestedResolution resolution = new CaseSummaryPayload.SuggestedResolution(
-                "S", "Suspected Fraud", "medium",
+                "SUSPECTED_FRAUD", "Suspected Fraud", "medium",
                 "Multiple fraud indicators triggered with no clear legitimate explanation.");
         CaseSummaryPayload.Citation citation = new CaseSummaryPayload.Citation(
                 citationId, "APP_EVENT_LOG", List.of("risk_score"));

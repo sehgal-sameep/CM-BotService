@@ -33,7 +33,7 @@ message (see §5, "continuing a conversation").
 | `conversationId` / `continuation` | Two different "remember our last chat" tokens the ML Agent hands back. Treat both as opaque strings — **never inspect or generate them yourself**, just echo back whatever the last response gave you. |
 | `messageId` | A unique ID this backend generates per message, for tracing in logs. Not something the frontend sends. |
 | `requestId` | Optional, frontend-generated. Purely for your own tracing/support tickets — this backend logs it but doesn't use it for anything else. |
-| `endUserId` | Optional hint about who the message is really about/for (exact meaning is the ML Agent's call, not this backend's). |
+| `endUserId` | Optional hint about who the message is really about/for. The ML Agent's contract expects this as a SHA-256 hash, base64-encoded — **whether the frontend must hash it before sending, or this backend is expected to, is not yet confirmed; this backend does not hash it today, just forwards whatever it's given.** |
 | `surface` | Which product is calling the ML Agent. This backend always sends `"case_manager"` — you never set this. |
 
 ## 3. Step 1 — What the frontend sends to this backend
@@ -74,7 +74,7 @@ Accept: text/event-stream
 | `conversationId` | No | Omit (or `null`) to start a brand-new conversation. Otherwise, send back the exact value from the previous response's `stream-complete` event. |
 | `continuation` | No | Same idea as `conversationId` — a second "remember our chat" token. Send back both if you have both; the ML Agent doesn't need you to choose between them. |
 | `requestId` | No | Your own tracking ID, for your logs only. |
-| `endUserId` | No | Forwarded to the ML Agent as-is; not interpreted by this backend. |
+| `endUserId` | No | Forwarded to the ML Agent as-is; not interpreted by this backend. Expected format: SHA-256 hash, base64-encoded (see §2) — hashing is not performed by this backend, so send an already-hashed value. |
 | `message` | **Yes** | The analyst's question/prompt. Max 4000 characters. |
 
 **That's it — this is the entire contract the frontend needs to know.** Everything
@@ -154,21 +154,22 @@ case manager UI to render:
     ]
   },
   "suggestedResolution": {
-    "mark": "S",
-    "label": "Suspected Fraud",
+    "mark": "SUSPECTED_FRAUD",
     "confidence": "medium",
     "rationale": "Multiple fraud indicators with no legitimate explanation."
   },
   "citations": [
-    { "id": "evt-123", "source": "APP_EVENT_LOG", "fields": ["risk_score"] }
+    { "id": "evt-123", "source": "AgenticGetCase.events[].decision", "fields": ["risk_score"] }
   ]
 }
 ```
 
 Two rules this backend enforces on every `payload` it receives (and rejects the
 response if either is broken): every `keySignal` must point to at least one
-`citations` entry, and `suggestedResolution.mark` must be one of
-`F S G A U Y B T X C`.
+`citations` entry, and `suggestedResolution.mark` must be one of `CONFIRMED_FRAUD`,
+`SUSPECTED_FRAUD`, `CONFIRMED_GENUINE`, `ASSUMED_GENUINE`, or `UNKNOWN` (an `ANY`
+value is documented as "filter-only" and must never actually be sent, so this backend
+treats it as invalid too).
 
 **The `done` event** — the only place the ML Agent reveals the tokens to remember:
 

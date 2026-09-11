@@ -12,7 +12,7 @@ import java.util.List;
  *   <li>every {@link KeySignal} carries at least one citation — the contract states a
  *       signal without a resolvable citation is a defect, not a soft failure</li>
  *   <li>{@link SuggestedResolution#mark()}, when present, is always one of the known
- *       platform resolution codes — the contract states the agent never invents one</li>
+ *       resolution enum names — the contract states the agent never invents one</li>
  * </ul>
  */
 public record CaseSummaryPayload(
@@ -23,12 +23,17 @@ public record CaseSummaryPayload(
 ) {
 
     /**
-     * Platform resolution codes the real contract enumerates. {@code X}/{@code C} are
-     * only valid when a tenant-side "ScamResolutions" flag is enabled — a flag this
-     * backend has no visibility into — so both are accepted unconditionally rather
-     * than risk wrongly rejecting a legitimate mark for a tenant with that flag on.
+     * The resolution enum names the real contract's Case Manager interface uses for
+     * {@link SuggestedResolution#mark()}. Deliberately excludes {@code ANY}: the
+     * contract documents it as "filter-only" and states it must never be emitted by
+     * the agent, so its presence here would be a contract violation, not a legitimate
+     * value to accept. Also deliberately excludes the single-character codes
+     * ({@code F S G A U Y B T}) — those are a *different* system's
+     * ({@code APP_EVENT_UPDATE.CUSTOM_MARK}) internal representation and, per the
+     * contract, never appear on this interface.
      */
-    public static final List<String> KNOWN_RESOLUTION_MARKS = List.of("F", "S", "G", "A", "U", "Y", "B", "T", "X", "C");
+    public static final List<String> KNOWN_RESOLUTION_MARKS =
+            List.of("CONFIRMED_FRAUD", "SUSPECTED_FRAUD", "CONFIRMED_GENUINE", "ASSUMED_GENUINE", "UNKNOWN");
 
     public record Summary(
             String narrative,

@@ -83,7 +83,7 @@ class GrpcMlAgentClientTest {
                             .setSignal("s").setSeverity("high").addCitations("c1").build())
                     .build())
             .setSuggestedResolution(Payload.SuggestedResolution.newBuilder()
-                    .setMark("S").setLabel("Suspected Fraud").setConfidence("medium").setRationale("r").build())
+                    .setMark("SUSPECTED_FRAUD").setLabel("Suspected Fraud").setConfidence("medium").setRationale("r").build())
             .addCitations(Payload.Citation.newBuilder().setId("c1").setSource("APP_EVENT_LOG").addFields("risk_score").build())
             .build();
 
@@ -111,7 +111,7 @@ class GrpcMlAgentClientTest {
                         && t.sequence() == 2 && t.delta().equals(" world"))
                 .expectNextMatches(e -> e instanceof MlAgentStreamEvent.Payload p
                         && p.payload().answer().equals("Hello world")
-                        && p.payload().suggestedResolution().mark().equals("S"))
+                        && p.payload().suggestedResolution().mark().equals("SUSPECTED_FRAUD"))
                 .expectNextMatches(e -> e instanceof MlAgentStreamEvent.Done d
                         && d.conversationId().equals("conv-1") && d.continuation().equals("cont-1"))
                 .verifyComplete();
@@ -164,6 +164,51 @@ class GrpcMlAgentClientTest {
         Payload badPayload = Payload.newBuilder()
                 .setAnswer("a")
                 .setSuggestedResolution(Payload.SuggestedResolution.newBuilder().setMark("Z").build())
+                .build();
+        GrpcMlAgentClient client = startClientWith(observer -> {
+            observer.onNext(ChatEvent.newBuilder().setPayload(badPayload).build());
+            observer.onCompleted();
+        });
+
+        StepVerifier.create(client.streamResponse(request()))
+                .expectNextMatches(e -> e instanceof MlAgentStreamEvent.Started)
+                .expectError(MlAgentMalformedResponseException.class)
+                .verify(Duration.ofSeconds(5));
+    }
+
+    /**
+     * The single-character codes (F/S/G/A/U/Y/B/T) are a different system's
+     * (APP_EVENT_UPDATE.CUSTOM_MARK) internal representation and, per the contract,
+     * never appear on this interface — so one showing up here is exactly as invalid as
+     * any other unrecognized string.
+     */
+    @Test
+    void malformedPayload_legacySingleCharacterMark_isMappedToMalformedResponseException() throws IOException {
+        Payload badPayload = Payload.newBuilder()
+                .setAnswer("a")
+                .setSuggestedResolution(Payload.SuggestedResolution.newBuilder().setMark("S").build())
+                .build();
+        GrpcMlAgentClient client = startClientWith(observer -> {
+            observer.onNext(ChatEvent.newBuilder().setPayload(badPayload).build());
+            observer.onCompleted();
+        });
+
+        StepVerifier.create(client.streamResponse(request()))
+                .expectNextMatches(e -> e instanceof MlAgentStreamEvent.Started)
+                .expectError(MlAgentMalformedResponseException.class)
+                .verify(Duration.ofSeconds(5));
+    }
+
+    /**
+     * {@code ANY} is documented as "filter-only" — the contract states the agent must
+     * never emit it, so its presence in a real response is itself a contract
+     * violation this backend should surface loudly, not silently accept.
+     */
+    @Test
+    void malformedPayload_filterOnlyAnyMark_isMappedToMalformedResponseException() throws IOException {
+        Payload badPayload = Payload.newBuilder()
+                .setAnswer("a")
+                .setSuggestedResolution(Payload.SuggestedResolution.newBuilder().setMark("ANY").build())
                 .build();
         GrpcMlAgentClient client = startClientWith(observer -> {
             observer.onNext(ChatEvent.newBuilder().setPayload(badPayload).build());

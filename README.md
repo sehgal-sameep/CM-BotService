@@ -67,8 +67,9 @@ omit both to start a new conversation, or send back either/both from a prior
 value** — the caller is responsible for remembering and resending them. `requestId`
 is an optional caller-generated id forwarded for tracing/correlation only.
 `endUserId` is an optional pass-through hint forwarded to the ML Agent's
-`context.endUserId` — its exact semantics are defined by the ML Agent's own contract,
-not this backend.
+`context.endUserId` — the contract documents this as a SHA-256 hash, base64-encoded;
+this backend does not compute that hash, it only forwards whatever value it's given
+(see "Known limitations").
 
 Headers `X-User-Id` and `X-Correlation-Id` are optional (see architecture doc §11).
 Log/monitoring correlation for one chatbot interaction is handled entirely through
@@ -310,9 +311,11 @@ layer.
 - The real contract's `contextToken`/product-auth path isn't wired up — this backend
   currently always sends the sandbox-path `tenantId`, since there's no real auth/JWT
   infrastructure yet. Documented gap, not a bug; see `docs/ARCHITECTURE.md §2`.
-- `context.endUserId`'s exact semantics (the analyst vs. the case's own customer)
-  aren't pinned down by the ML Agent's contract yet — this backend forwards whatever
-  `ChatRequest.endUserId` supplies verbatim, `null` if omitted, without guessing.
+- `context.endUserId` is documented as a SHA-256 hash, base64-encoded — but **who is
+  responsible for computing that hash is not specified anywhere in the contract**.
+  This backend forwards whatever `ChatRequest.endUserId` supplies verbatim (`null` if
+  omitted) and does not hash it. If the real contract expects this backend to hash a
+  raw value, that's unimplemented; flagged here rather than guessed at.
 - `trace=`/`span=` currently show blank in every log line despite
   `micrometer-tracing-bridge-otel` being on the classpath and `http.server.requests`
   metrics confirming request observations *are* being created — so a span exists, but

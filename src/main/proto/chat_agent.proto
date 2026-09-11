@@ -126,11 +126,16 @@ message Payload {
   Summary summary = 2;
 
   message SuggestedResolution {
-    // Kept as a string, not a proto enum: the known set is F/S/G/A/U/Y/B/T, plus X/C
-    // behind a tenant flag this backend can't see. A proto3 enum would either reject
-    // a code gated behind a flag this schema doesn't know about, or silently coerce
-    // it to the zero value — this backend validates the string against the known set
-    // in code instead (see CaseSummaryPayloadValidator), same as it did over HTTP.
+    // Kept as a string, not a proto enum, on purpose: the known set is the resolution
+    // enum names CONFIRMED_FRAUD/SUSPECTED_FRAUD/CONFIRMED_GENUINE/ASSUMED_GENUINE/
+    // UNKNOWN (ANY is filter-only and the contract states it must never be emitted —
+    // note the *single-character* codes F/S/G/A/U/Y/B/T are a wholly different
+    // system's, APP_EVENT_UPDATE.CUSTOM_MARK, internal representation and never
+    // appear here). A proto3 enum would silently coerce any value outside what this
+    // schema knows about to a default/UNRECOGNIZED value instead of surfacing it —
+    // this backend validates the string against the known set explicitly instead
+    // (see CaseSummaryPayloadValidator), so an agent-side contract violation is a
+    // loud, explicit exception rather than a silently wrong value.
     string mark = 1;
     string label = 2;
     string confidence = 3;
