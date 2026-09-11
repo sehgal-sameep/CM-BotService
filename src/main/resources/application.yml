@@ -80,7 +80,7 @@ chat:
   # of) the hard compile-time @Size(max = 4000) backstop on ChatRequest.message.
   max-message-length: 4000
   # Absolute ceiling on one ML Agent call's total duration, regardless of activity —
-  # see ChatOrchestrationService#withTotalDeadline.
+  # see ChatOrchestrationServiceImpl#withTotalDeadline.
   max-stream-duration: 45s
 
 app:

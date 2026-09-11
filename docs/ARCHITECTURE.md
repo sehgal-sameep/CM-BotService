@@ -680,7 +680,8 @@ com.cmbotservice
  │   ├─ controller/  ChatController
  │   ├─ dto/         ChatRequest, ErrorResponse
  │   └─ advice/      GlobalExceptionHandler
- ├─ service/    ChatOrchestrationService, ChatMetrics
+ ├─ service/    ChatOrchestrationService (interface), ChatOrchestrationServiceImpl,
+ │               ChatMetrics
  ├─ mlagent/    MlAgentClient, MlAgentRequest, MlAgentStreamEvent, CaseSummaryPayload,
  │               CaseSummaryPayloadValidator, MockMlAgentClient, MockScenario,
  │               GrpcMlAgentClient, grpc.v1/ (generated: ChatAgentGrpc, ChatRequest,

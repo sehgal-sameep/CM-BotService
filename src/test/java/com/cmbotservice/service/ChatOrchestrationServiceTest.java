@@ -33,11 +33,12 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Drives {@link ChatOrchestrationService} directly against small, purpose-built
- * resilience4j instances and stub {@link MlAgentClient}s — no Spring context needed —
- * to verify the resilience composition (retry classification, circuit breaker,
- * bulkhead, total-deadline) without waiting on real-world timeouts or relying on
- * {@code Thread.sleep} for correctness.
+ * Drives {@link ChatOrchestrationServiceImpl} (via its {@link ChatOrchestrationService}
+ * contract) directly against small, purpose-built resilience4j instances and stub
+ * {@link MlAgentClient}s — no Spring context needed — to verify the resilience
+ * composition (retry classification, circuit breaker, bulkhead, total-deadline)
+ * without waiting on real-world timeouts or relying on {@code Thread.sleep} for
+ * correctness.
  */
 class ChatOrchestrationServiceTest {
 
@@ -54,7 +55,7 @@ class ChatOrchestrationServiceTest {
                 new ResilienceProperties.CircuitBreaker(50f, 10, Duration.ofSeconds(30), 2, 5),
                 new ResilienceProperties.Bulkhead(50, Duration.ZERO),
                 new ResilienceProperties.Retry(maxRetryAttempts, Duration.ofMillis(1), Duration.ofMillis(10), 0.1));
-        return new ChatOrchestrationService(client, cb, bh, metrics, mlAgentProperties, resilienceProperties, chatProperties);
+        return new ChatOrchestrationServiceImpl(client, cb, bh, metrics, mlAgentProperties, resilienceProperties, chatProperties);
     }
 
     private static RequestContext context() {
@@ -73,7 +74,7 @@ class ChatOrchestrationServiceTest {
     void retriesBeforeFirstEvent_whenFailureIsTransientAndNothingHasStreamedYet() {
         AtomicInteger attempts = new AtomicInteger();
         // Flux.defer is essential here: streamResponse() is called exactly once per
-        // logical request (see ChatOrchestrationService#callMlAgent) — it's retryWhen
+        // logical request (see ChatOrchestrationServiceImpl#callMlAgent) — it's retryWhen
         // re-subscribing to the returned Flux that models a "retry", so the stub's
         // branching must be re-evaluated per subscription, not per call, to behave
         // differently on each attempt.
