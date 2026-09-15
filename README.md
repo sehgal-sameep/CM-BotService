@@ -30,11 +30,48 @@ this backend ↔ ML Agent), see
 [`docs/CHAT_API_GUIDE.md`](docs/CHAT_API_GUIDE.md) — hand that one to a frontend
 developer or a new teammate.
 
-## Running locally
+## Project setup & build
+
+### Prerequisites
+
+- **JDK 21** (Temurin/OpenJDK/Corretto — any distribution). Verify with `java -version`.
+- **No local Maven install needed** — this repo ships the Maven Wrapper
+  (`mvnw`/`mvnw.cmd`), which downloads the exact Maven version the project was built
+  against on first use. Use the wrapper, not a system `mvn`, so everyone builds with
+  the same Maven version.
+- **Internet access on first build** — beyond the usual dependency downloads, the
+  `protobuf-maven-plugin` (bound to `generate-sources`) downloads a per-OS `protoc`
+  and `protoc-gen-grpc-java` binary the first time (resolved automatically for
+  Windows/macOS/Linux via `os-maven-plugin`, see `pom.xml`). Subsequent builds reuse
+  the cached binaries from `~/.m2/repository`.
+- **Git**, to clone the repo.
+- Nothing else is required to build and run the app with its defaults
+  (`ml-agent.mode: mock`, `chatbot.security.mode: NONE`) — no local Redis, no real ML
+  Agent endpoint, no database.
+
+### Build
+
+```bash
+./mvnw clean install      # Linux/macOS — compiles, generates gRPC/protobuf sources,
+mvnw.cmd clean install    # Windows      runs tests, installs the jar to ~/.m2
+
+./mvnw clean package -DskipTests    # build only, skip tests (e.g. for a quick local jar)
+```
+
+Generated protobuf/gRPC Java sources land in
+`target/generated-sources/protobuf/{java,grpc-java}` — if your IDE doesn't pick them
+up automatically after a first build (imports on `ChatAgentGrpc`, request/response
+message classes unresolved), mark that directory as a generated-sources root, or
+re-run `mvn generate-sources` and refresh/reimport the Maven project.
+
+### Run
 
 ```bash
 ./mvnw spring-boot:run          # Linux/macOS
 mvnw.cmd spring-boot:run        # Windows
+
+# or, after a `clean package`:
+java -jar target/CM-BotService-0.0.1-SNAPSHOT.jar
 ```
 
 The app starts on `http://localhost:8080` with the mock ML Agent active by default
