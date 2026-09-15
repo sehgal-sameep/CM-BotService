@@ -366,6 +366,33 @@ fails startup, not a request. See `src/main/resources/application.yml`:
   correlation ID echo, `continuation`/`conversationId` round-tripping across two
   requests, 404.
 
+## Docker
+
+A multi-stage `Dockerfile` is provided — stage 1 builds the jar with the Maven Wrapper
+(JDK 21, also generates the gRPC/protobuf sources), stage 2 runs it on a minimal JRE
+21 image as a non-root user, with a `curl`-based `HEALTHCHECK` against
+`/actuator/health/liveness`.
+
+```bash
+docker build -t cm-bot-service .
+docker run -p 8080:8080 cm-bot-service
+
+# override any application.yml property via Spring Boot's relaxed env-var binding —
+# no image rebuild needed, e.g. to point at a real ML Agent and enable BFF auth:
+docker run -p 8080:8080 \
+  -e ML_AGENT_MODE=grpc -e ML_AGENT_GRPC_HOST=ml-agent -e ML_AGENT_GRPC_PORT=9090 \
+  -e CHATBOT_SECURITY_MODE=BFF_SESSION -e CHATBOT_SECURITY_REDIS_HOST=redis \
+  -e JAVA_OPTS="-Xmx512m -Xms256m" \
+  cm-bot-service
+```
+
+The image ships with no default Redis/ML-Agent connectivity baked in — with zero
+environment overrides it boots exactly like `mode: mock` / `chatbot.security.mode:
+NONE` locally (see "Running locally" above). `docker build` needs network access
+(dependency + protoc downloads); the running container does not, beyond whatever
+downstream services (`ml-agent.mode: grpc`, `chatbot.security.mode: BFF_SESSION`) you
+point it at.
+
 ## Replacing the mock with the real ML Agent
 
 Set `ml-agent.mode: grpc` and provide the real `ml-agent.grpc-host`/`grpc-port` —

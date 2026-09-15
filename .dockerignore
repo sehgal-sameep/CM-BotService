@@ -1,0 +1,11 @@
+target/
+out/
+.git/
+.gitattributes
+.idea/
+*.iml
+.vscode/
+docs/
+README.md
+HELP.md
+*.log
