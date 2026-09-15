@@ -102,6 +102,24 @@ class ChatControllerTest {
                 });
     }
 
+    @Test
+    void requestWithHistory_isAcceptedAndStreamsNormally() {
+        restTestClient.post()
+                .uri("/api/v1/chat/messages")
+                .contentType(MediaType.APPLICATION_JSON)
+                .accept(MediaType.TEXT_EVENT_STREAM)
+                .body(Map.of(
+                        "tenantId", "tenant-1", "caseId", "case-1",
+                        "history", java.util.List.of(
+                                Map.of("role", "user", "content", "Summarize this case for me"),
+                                Map.of("role", "assistant", "content", "Here's a summary...")),
+                        "message", "Which rules were triggered?"))
+                .exchange()
+                .expectStatus().isOk()
+                .expectBody(String.class)
+                .value(body -> assertThat(body).contains("event:stream-start", "event:stream-complete"));
+    }
+
     private static String extractLastQuotedValue(String sseBody, String fieldName) {
         Matcher matcher = Pattern.compile("\"" + fieldName + "\":\"([^\"]*)\"").matcher(sseBody);
         String last = null;

@@ -114,6 +114,10 @@ Request body (originally `POST /v1/chat`, now the `ChatRequest` proto message):
 {
   "continuation": "v1.k3.eyJlbmMi...",
   "conversationId": null,
+  "history": [
+    { "role": "user", "content": "Summarise this case" },
+    { "role": "assistant", "content": "..." }
+  ],
   "surface": "case_manager",
   "message": "Summarise this case",
   "context": { "caseId": "1234", "endUserId": "<sha256-base64>" },
@@ -122,13 +126,21 @@ Request body (originally `POST /v1/chat`, now the `ChatRequest` proto message):
 }
 ```
 
-`history` (an explicit transcript, the contract's third resumption mechanism) and
-`contextToken` (the product/prod-auth path) are deliberately never sent —
-`history` is "eval only" and would require storing/replaying messages, directly
-against this service's stateless design; `contextToken` has no real auth/JWT
-infrastructure behind it yet (documented gap, not a bug). Per the contract's own
-guidance, this service never chooses between `continuation`/`conversationId` — it
-just echoes back whatever the previous `done` event returned, verbatim.
+`history`, `continuation`, and `conversationId` are the contract's three resumption
+mechanisms (precedence `history > continuation > conversationId`); this service
+forwards all three exactly as the caller (`ChatRequest`) supplied them and never
+chooses between them — it doesn't assemble, store, or interpret any of the three,
+it just echoes back whatever `continuation`/`conversationId` the previous `done`
+event returned, and passes `history` straight through untouched. This is still a
+fully stateless pass-through: the caller (frontend/BFF), not this service, owns
+remembering and resending the transcript, exactly as it already owns
+`continuation`/`conversationId`. **The exact per-turn shape (`role`/`content`) is
+this backend's best-effort assumption** — the real contract documents `history`
+only as "an explicit transcript," with no field-level schema given — see
+`src/main/proto/chat_agent.proto`'s `HistoryTurn` message and README.md "Known
+limitations". `contextToken` (the product/prod-auth path) is still deliberately
+never sent — no real auth/JWT infrastructure exists behind it yet (documented gap,
+not a bug).
 
 `context.endUserId` is documented as a SHA-256 hash, base64-encoded — **who computes
 that hash is not specified by the contract and is not yet resolved.** This backend
@@ -634,7 +646,10 @@ ceiling on `message` plus a separately-configurable, runtime-checked
 `chat.max-message-length` ceiling (belt-and-suspenders: the annotation is the
 absolute limit this API will ever accept, the property lets ops tighten it further
 without a redeploy). `requestId` optional, propagated to `MlAgentRequest`, logged, not
-deduplicated anywhere (no store to dedupe against — by design).
+deduplicated anywhere (no store to dedupe against — by design). `history` is capped at
+50 turns (`@Size`) with `@Valid` cascading into each `HistoryTurn` (`role`/`content`
+both `@NotBlank`, `content` capped at 4000 chars like `message`) — bounds payload size
+without this service ever inspecting a turn's content.
 
 `spring.codec.max-in-memory-size` bounds the server-side request body; a separately
 configured limit on the gRPC channel (`grpc-max-inbound-message-size`, §7) bounds its
@@ -829,16 +844,18 @@ only the confirmed part (filter-and-reject-if-empty) is implemented.
 
 ## Verified end-to-end
 
-Full test suite (76 tests: unit, `StepVerifier`/virtual-time, an in-process gRPC
+Full test suite (79 tests: unit, `StepVerifier`/virtual-time, an in-process gRPC
 server (the gRPC analog of MockWebServer), a mocked Redis template
 (`JsonBlobSessionStoreTest`), and `RestTestClient` against a real random port —
 including a dedicated `ChatControllerAuthenticationTest` for `mode: BFF_SESSION`
 alongside the default-mode `ChatControllerTest`) green, including the ML Agent
-contract's request field mapping over gRPC, all six event types, both `payload`
-invariant validations, an unset-`oneof` malformed case, gRPC `Status.Code` →
-exception mapping, in-stream `error` event code mapping, `continuation`/
-`conversationId` round-tripping across two requests, and every authentication
-rejection path (§20) plus its success path and both Redis-failure modes. Live curl
+contract's request field mapping over gRPC (now including `history`), all six event
+types, both `payload` invariant validations, an unset-`oneof` malformed case, gRPC
+`Status.Code` → exception mapping, in-stream `error` event code mapping,
+`continuation`/`conversationId` round-tripping across two requests, `history` forwarded
+untouched alongside them (and defaulting to an empty list, never `null`, when omitted),
+and every authentication rejection path (§20) plus its success path and both
+Redis-failure modes. Live curl
 verification: success/slow/error/empty/rejected/continuation-expired scenarios;
 blank/missing-field validation → 400; circuit breaker forced open via repeated
 `trigger:error` → subsequent request rejected instantly with

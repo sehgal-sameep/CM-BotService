@@ -19,13 +19,25 @@ service ChatAgent {
   rpc Chat(ChatRequest) returns (stream ChatEvent);
 }
 
+// One turn of an explicit conversation transcript — the real contract's third
+// resumption mechanism (precedence: history > continuation > conversation_id).
+// Forwarded exactly as the caller supplied it; this backend never generates,
+// stores, or replays a history entry itself (still fully stateless — the caller,
+// not this service, owns remembering/resending the transcript, same as
+// continuation/conversation_id). The exact set of `role` values the real ML Agent
+// expects is unconfirmed (assumed "user"/"assistant", the industry-standard pair);
+// see ChatRequest (web DTO)'s javadoc and README.md "Known limitations".
+message HistoryTurn {
+  string role = 1;
+  string content = 2;
+}
+
 message ChatRequest {
-  // Resumption tokens. The real contract's own precedence is
-  // history > continuation > conversation_id; `history` is intentionally NOT
-  // represented here at all — it's documented as "eval only," and this backend is
-  // stateless (see MlAgentRequest's javadoc), so it never has one to send.
+  // Resumption tokens/mechanisms — see HistoryTurn above for why `history` is safe
+  // to forward despite this backend's stateless design.
   optional string continuation = 1;
   optional string conversation_id = 2;
+  repeated HistoryTurn history = 9;
 
   // Fixed to "case_manager" by this backend today; "policy_manager" is the contract's
   // other known surface. Left as a plain string rather than an enum on purpose — a

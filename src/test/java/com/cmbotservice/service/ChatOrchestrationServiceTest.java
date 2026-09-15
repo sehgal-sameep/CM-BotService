@@ -10,10 +10,12 @@ import com.cmbotservice.config.MlAgentProperties;
 import com.cmbotservice.config.ResilienceProperties;
 import com.cmbotservice.context.RequestContext;
 import com.cmbotservice.mlagent.MlAgentClient;
+import com.cmbotservice.mlagent.MlAgentRequest;
 import com.cmbotservice.mlagent.MlAgentStreamEvent;
 import com.cmbotservice.sse.StreamCompleteEvent;
 import com.cmbotservice.sse.StreamErrorEvent;
 import com.cmbotservice.web.dto.ChatRequest;
+import com.cmbotservice.web.dto.HistoryTurn;
 import io.github.resilience4j.bulkhead.Bulkhead;
 import io.github.resilience4j.bulkhead.BulkheadConfig;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
@@ -29,6 +31,7 @@ import reactor.core.publisher.Mono;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -63,7 +66,7 @@ class ChatOrchestrationServiceTest {
     }
 
     private static ChatRequest chatRequest(String message) {
-        return new ChatRequest("tenant-1", "case-1", null, null, "req-1", null, message);
+        return new ChatRequest("tenant-1", "case-1", null, null, null, "req-1", null, message);
     }
 
     private static ChatProperties defaultChatProperties() {
@@ -258,5 +261,43 @@ class ChatOrchestrationServiceTest {
         assertThat(attempts.get()).isEqualTo(1);
         assertThat(events).isNotNull().anySatisfy(e -> assertThat(e.data()).isInstanceOfSatisfying(
                 StreamErrorEvent.class, err -> assertThat(err.errorCode()).isEqualTo(ErrorCode.CONTINUATION_EXPIRED)));
+    }
+
+    @Test
+    void history_isForwardedToTheMlAgentRequestUntouched_alongsideContinuationAndConversationId() {
+        AtomicReference<MlAgentRequest> captured = new AtomicReference<>();
+        MlAgentClient capturing = request -> {
+            captured.set(request);
+            return Flux.just(new MlAgentStreamEvent.Started(), new MlAgentStreamEvent.Done("conv-1", "cont-1", 0, 0, 0));
+        };
+        ChatOrchestrationService service = newService(
+                CircuitBreaker.ofDefaults("t8"), Bulkhead.ofDefaults("t8"), 5, defaultChatProperties(), capturing);
+        ChatRequest request = new ChatRequest("tenant-1", "case-1", "conv-0", "cont-0",
+                List.of(new HistoryTurn("user", "hi"), new HistoryTurn("assistant", "hello")),
+                "req-1", null, "hello");
+
+        service.streamMessage(context(), request).collectList().block(Duration.ofSeconds(5));
+
+        assertThat(captured.get()).isNotNull();
+        assertThat(captured.get().continuation()).isEqualTo("cont-0");
+        assertThat(captured.get().conversationId()).isEqualTo("conv-0");
+        assertThat(captured.get().history()).containsExactly(
+                new MlAgentRequest.HistoryTurn("user", "hi"),
+                new MlAgentRequest.HistoryTurn("assistant", "hello"));
+    }
+
+    @Test
+    void missingHistory_isMappedToAnEmptyList_neverNull() {
+        AtomicReference<MlAgentRequest> captured = new AtomicReference<>();
+        MlAgentClient capturing = request -> {
+            captured.set(request);
+            return Flux.just(new MlAgentStreamEvent.Started(), new MlAgentStreamEvent.Done("conv-1", "cont-1", 0, 0, 0));
+        };
+        ChatOrchestrationService service = newService(
+                CircuitBreaker.ofDefaults("t9"), Bulkhead.ofDefaults("t9"), 5, defaultChatProperties(), capturing);
+
+        service.streamMessage(context(), chatRequest("hello")).collectList().block(Duration.ofSeconds(5));
+
+        assertThat(captured.get().history()).isEmpty();
     }
 }

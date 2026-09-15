@@ -10,6 +10,7 @@ import com.cmbotservice.mlagent.grpc.v1.ChatEvent;
 import com.cmbotservice.mlagent.grpc.v1.ChatRequest;
 import com.cmbotservice.mlagent.grpc.v1.Done;
 import com.cmbotservice.mlagent.grpc.v1.Error;
+import com.cmbotservice.mlagent.grpc.v1.HistoryTurn;
 import com.cmbotservice.mlagent.grpc.v1.Payload;
 import com.cmbotservice.mlagent.grpc.v1.Token;
 import com.cmbotservice.mlagent.grpc.v1.ToolCall;
@@ -28,10 +29,12 @@ import reactor.test.StepVerifier;
 
 import java.io.IOException;
 import java.time.Duration;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.groups.Tuple.tuple;
 
 /**
  * Exercises {@link GrpcMlAgentClient} against a real (in-process) gRPC server, proving
@@ -71,8 +74,9 @@ class GrpcMlAgentClientTest {
     }
 
     private static MlAgentRequest request() {
-        return new MlAgentRequest("tenant-1", "case-1", "cont-0", "conv-0", "msg-1", "analyst-1", "gadi5",
-                "corr-1", "req-1", MlAgentRequest.SURFACE_CASE_MANAGER, true, "hello");
+        return new MlAgentRequest("tenant-1", "case-1", "cont-0", "conv-0",
+                List.of(new MlAgentRequest.HistoryTurn("user", "hi"), new MlAgentRequest.HistoryTurn("assistant", "hello")),
+                "msg-1", "analyst-1", "gadi5", "corr-1", "req-1", MlAgentRequest.SURFACE_CASE_MANAGER, true, "hello");
     }
 
     private static final Payload VALID_PAYLOAD = Payload.newBuilder()
@@ -137,6 +141,9 @@ class GrpcMlAgentClientTest {
         assertThat(sent.getContext().getCaseId()).isEqualTo("case-1");
         assertThat(sent.getContext().getEndUserId()).isEqualTo("gadi5");
         assertThat(sent.getOptions().getIncludeResolutions()).isTrue();
+        assertThat(sent.getHistoryList())
+                .extracting(HistoryTurn::getRole, HistoryTurn::getContent)
+                .containsExactly(tuple("user", "hi"), tuple("assistant", "hello"));
     }
 
     @Test

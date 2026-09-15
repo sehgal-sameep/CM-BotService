@@ -1,5 +1,7 @@
 package com.cmbotservice.mlagent;
 
+import java.util.List;
+
 /**
  * Everything the ML Agent needs to answer a single analyst message, plus a few
  * internal-only fields ({@code messageId}/{@code correlationId}/{@code requestId})
@@ -13,14 +15,15 @@ package com.cmbotservice.mlagent;
  * owns that translation; this record is the stable internal contract every
  * {@link MlAgentClient} implementation (mock or real) is built against.
  * <p>
- * This backend is a stateless pass-through: it does not assemble or send conversation
- * history. Follow-up turns need prior context via exactly one of {@code continuation}
- * or {@code conversationId} (the real contract's third option, an explicit
- * {@code history} transcript, is "eval only" and would require storing/replaying
- * messages — directly against this service's stateless design, so it's never used).
- * Per the real contract's own guidance, this service doesn't need to choose between
- * {@code continuation}/{@code conversationId} — it just echoes back whatever the
- * previous {@link MlAgentStreamEvent.Done} returned, verbatim.
+ * This backend remains a stateless pass-through even though it now forwards
+ * {@code history}: it never assembles, stores, or replays a transcript itself — the
+ * caller (frontend/BFF) owns remembering and resending {@code history},
+ * {@code continuation}, and {@code conversationId} alike, exactly as
+ * {@link com.cmbotservice.web.dto.ChatRequest} received them. Per the real contract's
+ * own guidance (precedence {@code history > continuation > conversationId}), this
+ * service never chooses between the three — it just forwards whatever the caller
+ * supplied, and echoes back whatever the previous {@link MlAgentStreamEvent.Done}
+ * returned for {@code continuation}/{@code conversationId}, verbatim.
  * <p>
  * {@code endUserId} is an optional hint whose exact semantics (the analyst vs. the
  * case's customer) aren't yet pinned down upstream — forwarded as-is, never
@@ -32,6 +35,7 @@ public record MlAgentRequest(
         String caseId,
         String continuation,
         String conversationId,
+        List<HistoryTurn> history,
         String messageId,
         String userId,
         String endUserId,
@@ -48,4 +52,16 @@ public record MlAgentRequest(
      * surface the real contract also supports, not something this service produces.
      */
     public static final String SURFACE_CASE_MANAGER = "case_manager";
+
+    /**
+     * One turn of an explicit conversation transcript, forwarded to the ML Agent
+     * untouched. The real contract documents {@code history} only as "an explicit
+     * transcript" with no field-level schema given — {@code role}/{@code content} is
+     * this backend's best-effort assumption (the de facto standard shape for a chat
+     * transcript), not a confirmed part of the contract; see
+     * {@code src/main/proto/chat_agent.proto}'s {@code HistoryTurn} message and
+     * README.md "Known limitations".
+     */
+    public record HistoryTurn(String role, String content) {
+    }
 }

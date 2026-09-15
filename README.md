@@ -98,15 +98,17 @@ resource to nest a path under.
 Continuing a conversation is a pure echo, not a choice this backend makes: the real
 ML Agent's own contract states the caller never needs to pick a resumption mechanism,
 just send back whatever the previous response's `stream-complete` event returned.
-Concretely, `conversationId` and `continuation` are both optional on the request —
-omit both to start a new conversation, or send back either/both from a prior
-`stream-complete` to continue one. **This backend never stores or interprets either
-value** — the caller is responsible for remembering and resending them. `requestId`
-is an optional caller-generated id forwarded for tracing/correlation only.
-`endUserId` is an optional pass-through hint forwarded to the ML Agent's
-`context.endUserId` — the contract documents this as a SHA-256 hash, base64-encoded;
-this backend does not compute that hash, it only forwards whatever value it's given
-(see "Known limitations").
+Concretely, `history`, `conversationId`, and `continuation` are all optional on the
+request (the contract's own precedence is `history > continuation > conversationId`)
+— omit all three to start a new conversation, or send back whichever you have from a
+prior `stream-complete`/your own transcript to continue one. **This backend never
+stores or interprets any of the three** — the caller is responsible for remembering
+and resending them; `history`, if sent, is an array of `{role, content}` turns,
+forwarded to the ML Agent exactly as given. `requestId` is an optional
+caller-generated id forwarded for tracing/correlation only. `endUserId` is an optional
+pass-through hint forwarded to the ML Agent's `context.endUserId` — the contract
+documents this as a SHA-256 hash, base64-encoded; this backend does not compute that
+hash, it only forwards whatever value it's given (see "Known limitations").
 
 Headers `X-User-Id` and `X-Correlation-Id` are optional (see architecture doc §11).
 Log/monitoring correlation for one chatbot interaction is handled entirely through
@@ -139,6 +141,15 @@ curl -N -X POST "http://localhost:8080/api/v1/chat/messages" \
 
 Free text works the same way, e.g. `"Why was this transaction considered suspicious?"`,
 `"What should I investigate next?"`.
+
+Sending `history` alongside (or instead of) `conversationId`/`continuation` works the
+same way — it's just another pass-through field:
+
+```bash
+curl -N -X POST "http://localhost:8080/api/v1/chat/messages" \
+  -H "Content-Type: application/json" \
+  -d '{"tenantId":"tenant-42","caseId":"case-1001","history":[{"role":"user","content":"Summarize this case for me"},{"role":"assistant","content":"..."}],"message":"Which rules were triggered?"}'
+```
 
 ### 3. Exercise the mock ML Agent's failure modes
 
@@ -353,18 +364,20 @@ fails startup, not a request. See `src/main/resources/application.yml`:
 - `ChatOrchestrationServiceTest` — retry classification (before/after first event, incl.
   `MlAgentRejectedException`/`MlAgentContinuationExpiredException` never retried),
   circuit breaker open, bulkhead rejection, total-deadline enforcement, message-length
-  rejection — driven directly against small resilience4j instances, no Spring context.
+  rejection, and `history` forwarded to `MlAgentRequest` untouched (defaulting to an
+  empty list, never `null`, when omitted) — driven directly against small resilience4j
+  instances, no Spring context.
 - `GrpcMlAgentClientTest` — in-process gRPC server (the gRPC analog of MockWebServer):
-  real request field mapping assertion (matches the ML Agent's proto contract), all
-  six event types including `tool_call`/`tool_result` being consumed silently, both
-  `payload` invariant validations, an unset-oneof malformed case, gRPC `Status.Code` →
-  exception mapping, and in-stream `error` event code mapping (incl. 4221/4222 →
-  continuation expired) — same coverage the old MockWebServer-based test had, just
-  against the new transport.
+  real request field mapping assertion (matches the ML Agent's proto contract,
+  including `history`), all six event types including `tool_call`/`tool_result` being
+  consumed silently, both `payload` invariant validations, an unset-oneof malformed
+  case, gRPC `Status.Code` → exception mapping, and in-stream `error` event code
+  mapping (incl. 4221/4222 → continuation expired) — same coverage the old
+  MockWebServer-based test had, just against the new transport.
 - `ChatControllerTest` — full stack (`RestTestClient` against a real random port):
   SSE ordering (incl. the new `payload` event), validation, ML-failure-as-error-event,
   correlation ID echo, `continuation`/`conversationId` round-tripping across two
-  requests, 404.
+  requests, a request carrying `history` streaming normally end-to-end, 404.
 
 ## Docker
 
@@ -421,6 +434,15 @@ layer.
 
 ## Known limitations
 
+- **`ChatRequest.history`'s per-turn shape (`role`/`content`) is an assumption, not a
+  confirmed part of the ML Agent contract.** The contract documents `history` only as
+  "an explicit transcript, the contract's third resumption mechanism" — no field-level
+  schema is given. `role`/`content` is the de facto standard shape for a chat
+  transcript; this backend forwards it byte-for-byte (`ChatRequest` → `MlAgentRequest`
+  → the proto `HistoryTurn` message) without ever validating `role` against a known
+  set. If the real contract's turn shape differs, only `HistoryTurn` (in
+  `chat_agent.proto`, `MlAgentRequest`, and the web DTO) needs to change — the rest of
+  the pipeline treats it as opaque.
 - **The Redis session layout `JsonBlobSessionStore` assumes is unconfirmed.** The
   documented flow explicitly states the FMC-PM-BFF key format/serialization needs
   confirming and to implement behind a swappable strategy in the meantime — that's

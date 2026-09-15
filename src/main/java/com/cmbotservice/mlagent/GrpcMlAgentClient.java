@@ -11,6 +11,7 @@ import com.cmbotservice.mlagent.grpc.v1.ChatEvent;
 import com.cmbotservice.mlagent.grpc.v1.ChatRequest;
 import com.cmbotservice.mlagent.grpc.v1.Done;
 import com.cmbotservice.mlagent.grpc.v1.Error;
+import com.cmbotservice.mlagent.grpc.v1.HistoryTurn;
 import com.cmbotservice.mlagent.grpc.v1.Payload;
 import com.cmbotservice.mlagent.grpc.v1.Token;
 import com.cmbotservice.mlagent.grpc.v1.ToolCall;
@@ -231,6 +232,10 @@ public class GrpcMlAgentClient implements MlAgentClient {
         }
         if (request.conversationId() != null) {
             builder.setConversationId(request.conversationId());
+        }
+        if (request.history() != null) {
+            request.history().forEach(turn -> builder.addHistory(
+                    HistoryTurn.newBuilder().setRole(turn.role()).setContent(turn.content()).build()));
         }
         return builder.build();
     }

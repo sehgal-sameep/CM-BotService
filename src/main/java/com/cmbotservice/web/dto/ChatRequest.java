@@ -1,15 +1,18 @@
 package com.cmbotservice.web.dto;
 
 import io.swagger.v3.oas.annotations.media.Schema;
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
+import java.util.List;
+
 /**
  * The single request shape for this stateless orchestrator: everything the ML Agent
  * needs for one message, self-contained. There is nothing to look up server-side —
- * {@code tenantId}/{@code caseId}/{@code conversationId}/{@code continuation} are just
- * forwarded, not validated against any stored record.
+ * {@code tenantId}/{@code caseId}/{@code conversationId}/{@code continuation}/
+ * {@code history} are just forwarded, not validated against any stored record.
  */
 public record ChatRequest(
 
@@ -47,6 +50,19 @@ public record ChatRequest(
                 requiredMode = Schema.RequiredMode.NOT_REQUIRED
         )
         String continuation,
+
+        @Valid
+        @Size(max = 50, message = "history must contain at most 50 turns")
+        @Schema(
+                description = "Explicit conversation transcript from a prior response's `stream-complete` event "
+                        + "onward — the ML Agent's own contract lists `history` as its highest-precedence "
+                        + "resumption mechanism (history > continuation > conversationId). Omit for a new "
+                        + "conversation. This backend does not assemble, store, or interpret this transcript — "
+                        + "the caller owns remembering and resending it, exactly like `continuation`/"
+                        + "`conversationId`, so forwarding it does not compromise this service's stateless design.",
+                requiredMode = Schema.RequiredMode.NOT_REQUIRED
+        )
+        List<HistoryTurn> history,
 
         @Size(max = 100, message = "requestId must be at most 100 characters")
         @Schema(

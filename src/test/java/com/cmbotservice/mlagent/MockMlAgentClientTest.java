@@ -8,6 +8,7 @@ import reactor.core.publisher.Flux;
 import reactor.test.StepVerifier;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -21,8 +22,8 @@ class MockMlAgentClientTest {
     }
 
     private MlAgentRequest request(String message, String conversationId, String continuation) {
-        return new MlAgentRequest("tenant-1", "case-1", continuation, conversationId, "msg-1", "analyst-1", null,
-                "corr-1", "req-1", MlAgentRequest.SURFACE_CASE_MANAGER, true, message);
+        return new MlAgentRequest("tenant-1", "case-1", continuation, conversationId, List.of(), "msg-1", "analyst-1",
+                null, "corr-1", "req-1", MlAgentRequest.SURFACE_CASE_MANAGER, true, message);
     }
 
     @Test

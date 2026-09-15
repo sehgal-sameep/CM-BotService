@@ -24,6 +24,7 @@ import com.cmbotservice.sse.StreamCompleteEvent;
 import com.cmbotservice.sse.StreamErrorEvent;
 import com.cmbotservice.sse.StreamStartEvent;
 import com.cmbotservice.web.dto.ChatRequest;
+import com.cmbotservice.web.dto.HistoryTurn;
 import io.github.resilience4j.bulkhead.Bulkhead;
 import io.github.resilience4j.bulkhead.BulkheadFullException;
 import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
@@ -44,6 +45,7 @@ import reactor.util.retry.Retry;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -147,7 +149,8 @@ public class ChatOrchestrationServiceImpl implements ChatOrchestrationService {
      */
     private Flux<MlAgentStreamEvent> callMlAgent(RequestContext context, ChatRequest request, String messageId) {
         MlAgentRequest mlRequest = new MlAgentRequest(
-                context.tenantId(), context.caseId(), request.continuation(), request.conversationId(), messageId,
+                context.tenantId(), context.caseId(), request.continuation(), request.conversationId(),
+                toMlAgentHistory(request.history()), messageId,
                 context.userId(), request.endUserId(), context.correlationId(), request.requestId(),
                 MlAgentRequest.SURFACE_CASE_MANAGER, mlAgentProperties.includeResolutions(), request.message());
 
@@ -191,6 +194,18 @@ public class ChatOrchestrationServiceImpl implements ChatOrchestrationService {
                 // classification downstream (error mapping, metrics, logging). Propagate
                 // the original cause directly instead.
                 .onRetryExhaustedThrow((retrySpec, signal) -> signal.failure());
+    }
+
+    /**
+     * Pass-through mapping only — {@code history} turns are forwarded exactly as the
+     * caller supplied them, never inspected or reordered (see {@link MlAgentRequest}'s
+     * javadoc for why this doesn't compromise statelessness).
+     */
+    private static List<MlAgentRequest.HistoryTurn> toMlAgentHistory(List<HistoryTurn> history) {
+        if (history == null || history.isEmpty()) {
+            return List.of();
+        }
+        return history.stream().map(turn -> new MlAgentRequest.HistoryTurn(turn.role(), turn.content())).toList();
     }
 
     private static boolean isRetryable(Throwable ex) {
