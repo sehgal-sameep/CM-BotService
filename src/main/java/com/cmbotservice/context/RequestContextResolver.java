@@ -5,10 +5,12 @@ import org.springframework.web.server.ServerWebExchange;
 /**
  * Resolves "who is calling, for which tenant/case" into a {@link RequestContext}.
  * <p>
- * This is the single seam where real authentication will plug in later: swap the
- * {@link HeaderBasedRequestContextResolver} bean for one backed by a JWT/session
- * principal, and no controller or service code changes, since they only ever consume
- * the resolved {@link RequestContext}.
+ * This was the single seam real authentication plugged in at: {@link HeaderBasedRequestContextResolver}
+ * (active in {@code chatbot.security.mode: NONE}, trusting an {@code X-User-Id} header)
+ * and {@code com.cmbotservice.security.SessionRequestContextResolver} (active in
+ * {@code mode: BFF_SESSION}, backed by a validated session) are selected purely by
+ * that one property — no controller or service code change either way, since they
+ * only ever consume the resolved {@link RequestContext}.
  */
 public interface RequestContextResolver {
 

@@ -136,6 +136,55 @@ curl -N -X POST "http://localhost:8080/api/v1/chat/messages" -H "Content-Type: a
 curl -s http://localhost:8080/actuator/health/readiness  # -> still UP
 ```
 
+## Authentication
+
+`chatbot.security.mode` is the master toggle, checked before the request ever reaches
+`ChatController`:
+
+- **`NONE`** (default here, local-dev only) — bypasses all authentication; every
+  request is permitted unchanged. Logs a loud `WARN` banner on every startup while
+  active, so it's impossible to miss in logs if accidentally left on.
+- **`BFF_SESSION`** (the only mode for any shared/prod deployment) — validates an
+  existing BFF-issued session, read-only, against the same Redis instance FMC-PM-BFF
+  uses: extract the session cookie → look up the record (never write/refresh/delete)
+  → check access-token expiry → validate CSRF (cookie vs. header) → cross-check an
+  optional tenant header against the session's tenant → filter the session's
+  permissions to the `CHATBOT_`-prefixed subset and reject if none remain. Every
+  rejection returns the same `ErrorResponse` shape used elsewhere in this API
+  (`401 UNAUTHENTICATED`, `403 FORBIDDEN`, or `503 SESSION_STORE_UNAVAILABLE` if Redis
+  itself is unreachable).
+
+Only `POST /api/v1/chat/messages` is actually gated — actuator health/readiness,
+Swagger UI, and the OpenAPI JSON stay reachable without a session either way, since
+a k8s liveness/readiness prober has no BFF session cookie to send.
+
+```bash
+# mode: NONE (default) — works with no cookie at all
+curl -N -X POST "http://localhost:8080/api/v1/chat/messages" -H "Content-Type: application/json" -d '{"tenantId":"t","caseId":"c","message":"hello"}'
+
+# mode: BFF_SESSION — needs a valid session + matching CSRF cookie/header
+curl -N -X POST "http://localhost:8080/api/v1/chat/messages" \
+  -H "Content-Type: application/json" \
+  -H "Cookie: SESSION=<value>; XSRF-TOKEN=<csrf-value>" \
+  -H "X-XSRF-TOKEN: <csrf-value>" \
+  -d '{"tenantId":"t","caseId":"c","message":"hello"}'
+```
+
+| Property | Purpose |
+|---|---|
+| `chatbot.security.mode` | `NONE` (default) or `BFF_SESSION` — the master toggle |
+| `chatbot.security.session.cookie-name` | The BFF session cookie's name (default `SESSION`) |
+| `chatbot.security.session.tenant-header-name` | Optional tenant cross-check header name — **no default is documented in the source design; `X-Tenant-Id` is this service's own placeholder, unconfirmed** |
+| `chatbot.security.redis.*` | Host/port/ssl/password/namespace for the shared, read-only Redis connection, plus `strategy` (selects the `SessionStore` bean) and `field-names.*` (maps the assumed session JSON's field names — see "Known limitations") |
+| `chatbot.security.csrf.*` | `enabled`, `cookie-name` (default `XSRF-TOKEN`), `header-name` (default `X-XSRF-TOKEN`) |
+| `chatbot.security.authorization.*` | `required-permission-prefix` (default `CHATBOT_`), `permit-when-no-chatbot-permissions` (default `false`) |
+| `chatbot.security.cors.allowed-origins` | Explicit FMC UI origins allowed with credentials — no wildcard, ever |
+| `chatbot.security.fail-open-on-redis-error` | Insecure local-dev-only escape hatch (default `false`): permit the request through, unauthenticated, if Redis is unreachable instead of rejecting with 503 |
+
+See `docs/ARCHITECTURE.md`'s Authentication section for the full flow rationale and
+every judgment call this implementation made against an intentionally
+not-fully-specified design.
+
 ## SSE event contract (FE ↔ BE)
 
 | Event | Payload | Cardinality |
@@ -308,6 +357,25 @@ layer.
 
 ## Known limitations
 
+- **The Redis session layout `JsonBlobSessionStore` assumes is unconfirmed.** The
+  documented flow explicitly states the FMC-PM-BFF key format/serialization needs
+  confirming and to implement behind a swappable strategy in the meantime — that's
+  exactly what `SessionStore`/`chatbot.security.redis.strategy` is. The current
+  default assumes one JSON document per session at a plain string key; if the real
+  layout is structurally different (e.g. Spring Session's per-attribute hash scheme),
+  a new `SessionStore` implementation is needed, not a config change.
+- `chatbot.security.session.tenant-header-name` has no documented default in the
+  source design (unlike the cookie/CSRF property names, which do) — `X-Tenant-Id` is
+  this service's own placeholder pick, unconfirmed.
+- The documented flow describes "endpoint-level access enforced by required
+  permission (e.g., write vs. read)" as a general mechanism, but names no concrete
+  required permission for this service's one real endpoint. Only the confirmed part
+  is implemented: sessions are filtered to their `CHATBOT_`-prefixed permissions and
+  rejected if none remain. The granted-authority list is exposed on the exchange for
+  a future per-endpoint check, but no such check exists today.
+- No client-side hashing exists for `endUserId`'s documented SHA-256 format (see the
+  ML Agent contract note above) — unrelated to authentication, but the same
+  "documented format, unconfirmed responsibility" pattern.
 - The real contract's `contextToken`/product-auth path isn't wired up — this backend
   currently always sends the sandbox-path `tenantId`, since there's no real auth/JWT
   infrastructure yet. Documented gap, not a bug; see `docs/ARCHITECTURE.md §2`.

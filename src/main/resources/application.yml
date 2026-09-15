@@ -5,6 +5,27 @@ server:
 spring:
   application:
     name: cm-bot-service
+  autoconfigure:
+    exclude:
+      # This service hand-rolls its own single-purpose ReactiveRedisConnectionFactory
+      # (RedisSessionConfig, chatbot.security.redis.*, only created in mode:
+      # BFF_SESSION) rather than relying on Boot's generic spring.data.redis.*
+      # autoconfiguration — excluded to avoid two ReactiveRedisConnectionFactory beans
+      # coexisting for no reason.
+      - org.springframework.boot.data.redis.autoconfigure.DataRedisReactiveAutoConfiguration
+      - org.springframework.boot.data.redis.autoconfigure.DataRedisAutoConfiguration
+      # Boot auto-registers a live Redis ping as part of /actuator/health the moment
+      # any ReactiveRedisConnectionFactory bean exists — same principle as the ML
+      # Agent circuit breaker being kept out of the readiness group (see below): this
+      # is a read-only, best-effort session lookup, not a dependency whose outage
+      # should flip this service's own health/readiness. Excluded rather than solved
+      # via the readiness-group mechanism since it shouldn't affect the plain
+      # /actuator/health aggregate either — unlike the circuit breaker case, an
+      # unreachable session-auth Redis has its own explicit handling
+      # (chatbot.security.fail-open-on-redis-error / a 503 error response), so a
+      # second, redundant health signal adds noise without adding safety.
+      - org.springframework.boot.data.redis.autoconfigure.health.DataRedisReactiveHealthContributorAutoConfiguration
+      - org.springframework.boot.data.redis.autoconfigure.health.DataRedisHealthContributorAutoConfiguration
   lifecycle:
     # How long in-flight requests/streams get to finish on shutdown before being force-closed.
     timeout-per-shutdown-phase: 20s
@@ -39,6 +60,56 @@ management:
   tracing:
     sampling:
       probability: 1.0
+
+chatbot:
+  security:
+    # Master toggle. BFF_SESSION = full validation flow enabled (production).
+    # NONE = bypass all authentication, permit all requests (local dev only — a loud
+    # warning is logged on every startup while this is active). Everything below this
+    # line only applies when mode: BFF_SESSION.
+    mode: NONE
+    session:
+      # Cookie carrying the BFF-issued session identifier.
+      cookie-name: SESSION
+      # If the caller sends this header, it must match the tenant bound to the
+      # session record, or the request is rejected with 403. No default is documented
+      # for this header's name in the source design — "X-Tenant-Id" is this service's
+      # own placeholder pick, consistent with its other X-... headers; confirm with
+      # the FMC-PM-BFF team before relying on it.
+      tenant-header-name: X-Tenant-Id
+    redis:
+      # Selects the SessionStore bean (see JsonBlobSessionStore's Javadoc for the
+      # important caveat: the real FMC-PM-BFF Redis session layout is not yet
+      # confirmed, so this "json-blob" strategy is a best-effort default, not a
+      # verified format).
+      strategy: json-blob
+      namespace: "chatbot-session"
+      host: localhost
+      port: 6379
+      ssl: false
+      password: ""
+      # Field names inside the assumed single JSON document per session. Change these
+      # (no code change needed) once the real layout is confirmed.
+      field-names:
+        username: username
+        tenant-id: tenantId
+        permissions: permissions
+        organizations: organizations
+        access-token-expiry: accessTokenExpiry
+        fingerprint: fingerprint
+    csrf:
+      enabled: true
+      cookie-name: XSRF-TOKEN
+      header-name: X-XSRF-TOKEN
+    authorization:
+      required-permission-prefix: "CHATBOT_"
+      permit-when-no-chatbot-permissions: false
+    cors:
+      allowed-origins: []
+    # Insecure escape hatch for local development only: if the shared Redis is
+    # unreachable, permit the request through anyway instead of rejecting with 503.
+    # Must never be true in a shared/prod environment.
+    fail-open-on-redis-error: false
 
 ml-agent:
   # "mock" (default, MockMlAgentClient) or "grpc" (GrpcMlAgentClient, real gRPC calls).
