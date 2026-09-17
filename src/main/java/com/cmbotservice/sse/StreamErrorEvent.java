@@ -10,7 +10,6 @@ import java.time.Instant;
  * logged server-side only, never sent to the client.
  */
 public record StreamErrorEvent(
-        String conversationId,
         String messageId,
         ErrorCode errorCode,
         String errorMessage,

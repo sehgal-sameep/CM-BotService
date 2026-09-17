@@ -2,18 +2,19 @@ package com.cmbotservice.mlagent;
 
 import com.cmbotservice.common.ErrorCode;
 import com.cmbotservice.common.MlAgentCommunicationException;
-import com.cmbotservice.common.MlAgentContinuationExpiredException;
 import com.cmbotservice.common.MlAgentMalformedResponseException;
 import com.cmbotservice.common.MlAgentRejectedException;
 import com.cmbotservice.common.MlAgentUnavailableException;
+import com.cmbotservice.mlagent.grpc.v1.AgentRequestContext;
+import com.cmbotservice.mlagent.grpc.v1.AnswerEvent;
+import com.cmbotservice.mlagent.grpc.v1.AnswerPayload;
+import com.cmbotservice.mlagent.grpc.v1.AskCaseManagerRequest;
+import com.cmbotservice.mlagent.grpc.v1.CaseManagerAnswerPayload;
 import com.cmbotservice.mlagent.grpc.v1.ChatAgentGrpc;
-import com.cmbotservice.mlagent.grpc.v1.ChatEvent;
-import com.cmbotservice.mlagent.grpc.v1.ChatRequest;
+import com.cmbotservice.mlagent.grpc.v1.Chunk;
+import com.cmbotservice.mlagent.grpc.v1.ConversationTurn;
 import com.cmbotservice.mlagent.grpc.v1.Done;
 import com.cmbotservice.mlagent.grpc.v1.Error;
-import com.cmbotservice.mlagent.grpc.v1.HistoryTurn;
-import com.cmbotservice.mlagent.grpc.v1.Payload;
-import com.cmbotservice.mlagent.grpc.v1.Token;
 import com.cmbotservice.mlagent.grpc.v1.ToolCall;
 import com.cmbotservice.mlagent.grpc.v1.ToolResult;
 import io.grpc.Status;
@@ -34,17 +35,17 @@ import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Real {@link MlAgentClient} implementation: calls Thoughtful Labs' ML Agent over
- * gRPC's server-streaming {@code ChatAgent.Chat} RPC (see
- * {@code src/main/proto/chat_agent.proto}), translating its six event types
- * (<code>token</code>, <code>tool_call</code>, <code>tool_result</code>,
- * <code>payload</code>, <code>done</code>, <code>error</code>) into
+ * gRPC's server-streaming {@code ChatAgent.AskCaseManager} RPC (see
+ * {@code src/main/proto/chat_agent.proto}), translating its seven event types
+ * (<code>chunk</code>, <code>tool_call</code>, <code>tool_result</code>,
+ * <code>payload</code>, <code>done</code>, <code>error</code>, <code>ping</code>) into
  * {@link MlAgentStreamEvent}. Never buffers the response — no
  * {@code collectList()}/{@code .block()}, just a straight {@code Flux}.
  * <p>
  * {@code tool_call}/{@code tool_result} are consumed and logged only, per the real
  * contract's own note that they're "rendered in the sandbox trace, logged in
  * product" — this backend is the product, not the sandbox, so they never become a
- * domain event.
+ * domain event. {@code ping} is a pure keepalive and is likewise only logged.
  * <p>
  * grpc-java's generated async stub is callback-based ({@code StreamObserver}), not
  * {@code Flux}-based — {@link #grpcEventFlux} bridges the two manually via
@@ -75,7 +76,7 @@ public class GrpcMlAgentClient implements MlAgentClient {
     @Override
     public Flux<MlAgentStreamEvent> streamResponse(MlAgentRequest request) {
         AtomicInteger lastSequence = new AtomicInteger(0);
-        ChatRequest protoRequest = toProtoRequest(request);
+        AskCaseManagerRequest protoRequest = toProtoRequest(request);
 
         Flux<MlAgentStreamEvent> events = grpcEventFlux(protoRequest)
                 .<MlAgentStreamEvent>handle((event, sink) -> emit(event, lastSequence, sink))
@@ -86,18 +87,18 @@ public class GrpcMlAgentClient implements MlAgentClient {
 
     /**
      * Bridges grpc-java's callback-based async stub into a cold, backpressure-respecting
-     * {@code Flux}: nothing is sent to the wire until subscribed ({@code stub.chat(...)}
+     * {@code Flux}: nothing is sent to the wire until subscribed ({@code stub.askCaseManager(...)}
      * runs inside the {@code Flux.create} lambda), downstream demand is translated into
      * {@code ClientCallStreamObserver#request(int)} calls, and cancellation (a client
      * disconnect propagating down from {@code ChatOrchestrationService}) calls
      * {@code ClientCallStreamObserver#cancel(...)} to actually stop the server-side call.
      */
-    private Flux<ChatEvent> grpcEventFlux(ChatRequest protoRequest) {
+    private Flux<AnswerEvent> grpcEventFlux(AskCaseManagerRequest protoRequest) {
         return Flux.create(sink -> {
-            AtomicReference<ClientCallStreamObserver<ChatRequest>> callStreamRef = new AtomicReference<>();
-            ClientResponseObserver<ChatRequest, ChatEvent> observer = new ClientResponseObserver<>() {
+            AtomicReference<ClientCallStreamObserver<AskCaseManagerRequest>> callStreamRef = new AtomicReference<>();
+            ClientResponseObserver<AskCaseManagerRequest, AnswerEvent> observer = new ClientResponseObserver<>() {
                 @Override
-                public void beforeStart(ClientCallStreamObserver<ChatRequest> callStream) {
+                public void beforeStart(ClientCallStreamObserver<AskCaseManagerRequest> callStream) {
                     // Only disable auto flow control and stash the reference here — grpc-java
                     // forbids calling request()/cancel() before the call has actually started,
                     // and beforeStart() runs synchronously *before* start(). Wiring sink.onRequest
@@ -109,7 +110,7 @@ public class GrpcMlAgentClient implements MlAgentClient {
                 }
 
                 @Override
-                public void onNext(ChatEvent event) {
+                public void onNext(AnswerEvent event) {
                     sink.next(event);
                 }
 
@@ -123,63 +124,86 @@ public class GrpcMlAgentClient implements MlAgentClient {
                     sink.complete();
                 }
             };
-            chatAgentStub.chat(protoRequest, observer);
-            // chatAgentStub.chat(...) has now returned, meaning start() has already run (grpc-java
-            // calls it synchronously as part of this method) — request()/cancel() are safe from here on.
-            ClientCallStreamObserver<ChatRequest> callStream = callStreamRef.get();
+            chatAgentStub.askCaseManager(protoRequest, observer);
+            // chatAgentStub.askCaseManager(...) has now returned, meaning start() has already run
+            // (grpc-java calls it synchronously as part of this method) — request()/cancel() are
+            // safe from here on.
+            ClientCallStreamObserver<AskCaseManagerRequest> callStream = callStreamRef.get();
             sink.onRequest(n -> callStream.request(n >= Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) n));
             sink.onCancel(() -> callStream.cancel("Downstream cancelled", null));
         }, FluxSink.OverflowStrategy.ERROR);
     }
 
-    private void emit(ChatEvent event, AtomicInteger lastSequence, SynchronousSink<MlAgentStreamEvent> sink) {
+    private void emit(AnswerEvent event, AtomicInteger lastSequence, SynchronousSink<MlAgentStreamEvent> sink) {
         switch (event.getEventCase()) {
-            case TOKEN -> sink.next(toToken(event.getToken(), lastSequence));
+            case CHUNK -> sink.next(toToken(event.getChunk(), lastSequence));
             case TOOL_CALL -> logToolCall(event.getToolCall());
             case TOOL_RESULT -> logToolResult(event.getToolResult());
             case PAYLOAD -> sink.next(toPayload(event.getPayload()));
             case DONE -> sink.next(toDone(event.getDone()));
             case ERROR -> sink.error(toErrorException(event.getError()));
-            case EVENT_NOT_SET ->
-                    sink.error(new MlAgentMalformedResponseException("ML Agent ChatEvent had no event set"));
+            case PING -> log.trace("ML Agent ping received");
+            // Per the contract: "Clients MUST ignore events whose `event` oneof is
+            // unset or unrecognised and continue reading the stream" — no error, no
+            // domain event, just skip it.
+            case EVENT_NOT_SET -> log.debug("ML Agent AnswerEvent had no event set; ignoring per contract");
         }
     }
 
-    private static MlAgentStreamEvent.Token toToken(Token token, AtomicInteger lastSequence) {
-        return new MlAgentStreamEvent.Token(token.getDelta(), lastSequence.incrementAndGet());
+    private static MlAgentStreamEvent.Token toToken(Chunk chunk, AtomicInteger lastSequence) {
+        return new MlAgentStreamEvent.Token(chunk.getDelta(), lastSequence.incrementAndGet());
     }
 
-    private static MlAgentStreamEvent.Payload toPayload(Payload proto) {
-        CaseSummaryPayload payload = toDomainPayload(proto);
+    private static MlAgentStreamEvent.Payload toPayload(AnswerPayload proto) {
+        if (proto.getPayloadCase() != AnswerPayload.PayloadCase.CASE_MANAGER_ANSWER_PAYLOAD) {
+            throw new MlAgentMalformedResponseException("ML Agent 'payload' event has no recognised payload set");
+        }
+        CaseSummaryPayload payload = toDomainPayload(proto.getCaseManagerAnswerPayload());
         CaseSummaryPayloadValidator.validate(payload);
         return new MlAgentStreamEvent.Payload(payload);
     }
 
     private static MlAgentStreamEvent.Done toDone(Done done) {
         return new MlAgentStreamEvent.Done(
-                done.getConversationId(), done.getContinuation(),
-                done.getLatencyMs(), done.getTokensIn(), done.getTokensOut());
-    }
-
-    private static Throwable toErrorException(Error error) {
-        String message = error.getMessage().isEmpty() ? "The ML Agent reported an error" : error.getMessage();
-        return mapErrorCode(error.getCode(), message);
+                done.getLatencyMs(), done.getTokensIn(), done.getTokensOut(),
+                done.getStopReason() == Done.StopReason.STOP_REASON_TRUNCATED);
     }
 
     /**
-     * One unified error-code space the real contract uses both as a gRPC-level status
-     * (see {@link #mapStatus}) and, for codes only discoverable mid-stream, as this
-     * terminal {@code error} event's {@code code} field — identical mapping to what
-     * the original HTTP/SSE integration used.
+     * Unlike the old contract's {@code error} event, this one carries no human-readable
+     * message field at all ("Debug detail is in server logs under request_id; nothing
+     * else travels here") — the message text here is this backend's own, chosen from
+     * the code, not anything the agent sent.
      */
-    private static Throwable mapErrorCode(String code, String message) {
+    private static Throwable toErrorException(Error error) {
+        String message = messageFor(error.getCode());
+        // The contract now carries retryability explicitly as a boolean rather than
+        // implying it from the error code — this reuses ChatOrchestrationServiceImpl's
+        // existing type-based retry classification (MlAgentCommunicationException is
+        // retried, MlAgentRejectedException never is) instead of duplicating that
+        // decision here.
+        if (error.getRetryable()) {
+            return new MlAgentCommunicationException(message);
+        }
+        return new MlAgentRejectedException(mapErrorCode(error.getCode()), message);
+    }
+
+    private static ErrorCode mapErrorCode(Error.Code code) {
         return switch (code) {
-            case "401", "403" -> new MlAgentRejectedException(ErrorCode.INTERNAL_ERROR, message);
-            case "404" -> new MlAgentRejectedException(ErrorCode.NOT_FOUND, message);
-            case "422" -> new MlAgentRejectedException(ErrorCode.VALIDATION_ERROR, message);
-            case "429", "503" -> new MlAgentCommunicationException(message);
-            case "4221", "4222" -> new MlAgentContinuationExpiredException(message);
-            default -> new MlAgentCommunicationException(message);
+            case ERROR_CODE_MODEL_REFUSED -> ErrorCode.ML_AGENT_REFUSED;
+            case ERROR_CODE_DATA_UNAVAILABLE -> ErrorCode.ML_AGENT_ERROR;
+            // ERROR_CODE_INTERNAL, ERROR_CODE_UNSPECIFIED, and any future/unrecognised
+            // value all fall back to a plain internal error — "Clients MUST treat any
+            // unrecognised value as ERROR_CODE_INTERNAL" per the contract.
+            default -> ErrorCode.INTERNAL_ERROR;
+        };
+    }
+
+    private static String messageFor(Error.Code code) {
+        return switch (code) {
+            case ERROR_CODE_MODEL_REFUSED -> "The ML Agent refused to process the request";
+            case ERROR_CODE_DATA_UNAVAILABLE -> "The ML Agent's data source was unavailable";
+            default -> "The ML Agent reported an internal error";
         };
     }
 
@@ -204,67 +228,64 @@ public class GrpcMlAgentClient implements MlAgentClient {
     }
 
     private void logToolCall(ToolCall toolCall) {
-        log.debug("ML Agent tool_call id={} name={}", toolCall.getId(), toolCall.getName());
+        log.debug("ML Agent tool_call id={} name={}", toolCall.getToolCallId(), toolCall.getName());
     }
 
     private void logToolResult(ToolResult toolResult) {
-        log.debug("ML Agent tool_result id={} ms={} rowCount={} ok={}",
-                toolResult.getId(), toolResult.getMs(), toolResult.getRowCount(), toolResult.getOk());
+        log.debug("ML Agent tool_result id={} status={} ms={} rowCount={}",
+                toolResult.getToolCallId(), toolResult.getStatus(), toolResult.getMs(),
+                toolResult.hasRowCount() ? toolResult.getRowCount() : "n/a");
     }
 
-    private static ChatRequest toProtoRequest(MlAgentRequest request) {
-        ChatRequest.Context.Builder context = ChatRequest.Context.newBuilder().setCaseId(request.caseId());
+    private static AskCaseManagerRequest toProtoRequest(MlAgentRequest request) {
+        AgentRequestContext requestContext = AgentRequestContext.newBuilder()
+                .setTenant(request.tenantId())
+                .setOrganization(request.organization() == null ? "" : request.organization())
+                .setAgentSessionId(request.requestId() == null ? "" : request.requestId())
+                .setRequestId(request.correlationId() == null ? "" : request.correlationId())
+                .build();
+
+        AskCaseManagerRequest.CaseContext.Builder caseContext =
+                AskCaseManagerRequest.CaseContext.newBuilder().setCaseId(request.caseId());
         if (request.endUserId() != null) {
-            context.setEndUserId(request.endUserId());
+            caseContext.setEndUserId(request.endUserId());
         }
 
-        ChatRequest.Builder builder = ChatRequest.newBuilder()
-                .setSurface(request.surface())
-                .setMessage(request.message())
-                .setTenantId(request.tenantId())
-                .setContext(context.build())
-                .setOptions(ChatRequest.Options.newBuilder()
-                        .setIncludeResolutions(request.includeResolutions())
-                        .build());
+        AskCaseManagerRequest.Builder builder = AskCaseManagerRequest.newBuilder()
+                .setRequestContext(requestContext)
+                .setOperatorId(request.operatorId() == null ? "" : request.operatorId())
+                .setPrompt(request.message())
+                .setCaseContext(caseContext.build());
 
-        if (request.continuation() != null) {
-            builder.setContinuation(request.continuation());
-        }
-        if (request.conversationId() != null) {
-            builder.setConversationId(request.conversationId());
-        }
         if (request.history() != null) {
-            request.history().forEach(turn -> builder.addHistory(
-                    HistoryTurn.newBuilder().setRole(turn.role()).setContent(turn.content()).build()));
+            request.history().forEach(turn -> builder.addHistory(toConversationTurn(turn)));
         }
         return builder.build();
     }
 
-    private static CaseSummaryPayload toDomainPayload(Payload proto) {
-        CaseSummaryPayload.Summary summary = proto.hasSummary() ? toDomainSummary(proto.getSummary()) : null;
-        CaseSummaryPayload.SuggestedResolution resolution = proto.hasSuggestedResolution()
-                ? toDomainResolution(proto.getSuggestedResolution()) : null;
+    /**
+     * The wire contract's {@code ConversationTurn} is a {@code user}/{@code agent}
+     * oneof rather than this backend's own {@code role}/{@code content} shape —
+     * {@code role} is assumed "user" vs. anything else meaning the agent's own prior
+     * turn, matching {@code MlAgentRequest.HistoryTurn}'s existing assumption.
+     */
+    private static ConversationTurn toConversationTurn(MlAgentRequest.HistoryTurn turn) {
+        ConversationTurn.Builder builder = ConversationTurn.newBuilder();
+        if ("user".equalsIgnoreCase(turn.role())) {
+            builder.setUser(ConversationTurn.UserTurn.newBuilder().setPrompt(turn.content()));
+        } else {
+            builder.setAgent(ConversationTurn.AgentTurn.newBuilder().setText(turn.content()));
+        }
+        return builder.build();
+    }
+
+    private static CaseSummaryPayload toDomainPayload(CaseManagerAnswerPayload proto) {
+        List<CaseSummaryPayload.KeySignal> keySignals = proto.getKeySignalsList().stream()
+                .map(s -> new CaseSummaryPayload.KeySignal(s.getSignal(), List.copyOf(s.getCitationsList())))
+                .toList();
         List<CaseSummaryPayload.Citation> citations = proto.getCitationsList().stream()
                 .map(c -> new CaseSummaryPayload.Citation(c.getId(), c.getSource(), List.copyOf(c.getFieldsList())))
                 .toList();
-        return new CaseSummaryPayload(proto.getAnswer(), summary, resolution, citations);
-    }
-
-    private static CaseSummaryPayload.Summary toDomainSummary(Payload.Summary proto) {
-        List<CaseSummaryPayload.KeySignal> keySignals = proto.getKeySignalsList().stream()
-                .map(s -> new CaseSummaryPayload.KeySignal(s.getSignal(), s.getSeverity(), List.copyOf(s.getCitationsList())))
-                .toList();
-        List<CaseSummaryPayload.Entity> entities = proto.getEntitiesList().stream()
-                .map(e -> new CaseSummaryPayload.Entity(e.getType(), e.getValue(), List.copyOf(e.getEventsList())))
-                .toList();
-        List<CaseSummaryPayload.TimelineEvent> timeline = proto.getTimelineList().stream()
-                .map(t -> new CaseSummaryPayload.TimelineEvent(t.getAt(), t.getEventId(), t.getWhat()))
-                .toList();
-        return new CaseSummaryPayload.Summary(proto.getNarrative(), keySignals, entities, timeline);
-    }
-
-    private static CaseSummaryPayload.SuggestedResolution toDomainResolution(Payload.SuggestedResolution proto) {
-        return new CaseSummaryPayload.SuggestedResolution(
-                proto.getMark(), proto.getLabel(), proto.getConfidence(), proto.getRationale());
+        return new CaseSummaryPayload(keySignals, citations);
     }
 }

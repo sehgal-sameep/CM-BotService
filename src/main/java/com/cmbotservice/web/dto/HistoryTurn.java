@@ -7,13 +7,12 @@ import jakarta.validation.constraints.Size;
 /**
  * One turn of an explicit conversation transcript, as understood by
  * {@link ChatRequest#history()}. Forwarded to the ML Agent untouched — this backend
- * never interprets {@code role}/{@code content}, just like {@code continuation}.
+ * never interprets {@code role}/{@code content}, just translates it into the wire
+ * contract's {@code user}/{@code agent} oneof shape (see
+ * {@code GrpcMlAgentClient#toConversationTurn}).
  * <p>
- * The real ML Agent contract documents {@code history} only as "an explicit
- * transcript, the contract's third resumption mechanism" with no field-level schema
- * given. {@code role}/{@code content} is this backend's best-effort assumption (the
- * de facto standard shape for a chat transcript, e.g. {@code role: "user"|"assistant"}),
- * not a confirmed part of the contract — see README.md "Known limitations".
+ * {@code role}/{@code content} is this backend's own stable shape for a chat turn, not
+ * the wire format — see README.md "Known limitations" for background.
  */
 public record HistoryTurn(
 

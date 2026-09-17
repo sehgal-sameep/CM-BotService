@@ -16,8 +16,7 @@ public enum MockScenario {
     TIMEOUT("trigger:timeout"),
     ERROR("trigger:error"),
     EMPTY("trigger:empty"),
-    REJECTED("trigger:rejected"),
-    CONTINUATION_EXPIRED("trigger:continuation-expired");
+    REJECTED("trigger:rejected");
 
     private final String keyword;
 

@@ -5,14 +5,15 @@ import com.cmbotservice.common.MlAgentCommunicationException;
 import com.cmbotservice.common.MlAgentMalformedResponseException;
 import com.cmbotservice.common.MlAgentRejectedException;
 import com.cmbotservice.common.MlAgentUnavailableException;
+import com.cmbotservice.mlagent.grpc.v1.AnswerEvent;
+import com.cmbotservice.mlagent.grpc.v1.AnswerPayload;
+import com.cmbotservice.mlagent.grpc.v1.AskCaseManagerRequest;
+import com.cmbotservice.mlagent.grpc.v1.CaseManagerAnswerPayload;
 import com.cmbotservice.mlagent.grpc.v1.ChatAgentGrpc;
-import com.cmbotservice.mlagent.grpc.v1.ChatEvent;
-import com.cmbotservice.mlagent.grpc.v1.ChatRequest;
+import com.cmbotservice.mlagent.grpc.v1.Chunk;
+import com.cmbotservice.mlagent.grpc.v1.ConversationTurn;
 import com.cmbotservice.mlagent.grpc.v1.Done;
 import com.cmbotservice.mlagent.grpc.v1.Error;
-import com.cmbotservice.mlagent.grpc.v1.HistoryTurn;
-import com.cmbotservice.mlagent.grpc.v1.Payload;
-import com.cmbotservice.mlagent.grpc.v1.Token;
 import com.cmbotservice.mlagent.grpc.v1.ToolCall;
 import com.cmbotservice.mlagent.grpc.v1.ToolResult;
 import io.grpc.ManagedChannel;
@@ -34,7 +35,6 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.groups.Tuple.tuple;
 
 /**
  * Exercises {@link GrpcMlAgentClient} against a real (in-process) gRPC server, proving
@@ -47,13 +47,13 @@ class GrpcMlAgentClientTest {
 
     private Server server;
     private ManagedChannel channel;
-    private final AtomicReference<ChatRequest> capturedRequest = new AtomicReference<>();
+    private final AtomicReference<AskCaseManagerRequest> capturedRequest = new AtomicReference<>();
 
-    private GrpcMlAgentClient startClientWith(Consumer<StreamObserver<ChatEvent>> script) throws IOException {
+    private GrpcMlAgentClient startClientWith(Consumer<StreamObserver<AnswerEvent>> script) throws IOException {
         String serverName = InProcessServerBuilder.generateName();
         ChatAgentGrpc.ChatAgentImplBase service = new ChatAgentGrpc.ChatAgentImplBase() {
             @Override
-            public void chat(ChatRequest request, StreamObserver<ChatEvent> responseObserver) {
+            public void askCaseManager(AskCaseManagerRequest request, StreamObserver<AnswerEvent> responseObserver) {
                 capturedRequest.set(request);
                 script.accept(responseObserver);
             }
@@ -74,35 +74,33 @@ class GrpcMlAgentClientTest {
     }
 
     private static MlAgentRequest request() {
-        return new MlAgentRequest("tenant-1", "case-1", "cont-0", "conv-0",
+        return new MlAgentRequest("tenant-1", "org-1", "case-1",
                 List.of(new MlAgentRequest.HistoryTurn("user", "hi"), new MlAgentRequest.HistoryTurn("assistant", "hello")),
-                "msg-1", "analyst-1", "gadi5", "corr-1", "req-1", MlAgentRequest.SURFACE_CASE_MANAGER, true, "hello");
+                "msg-1", "analyst-1", "gadi5", "corr-1", "req-1", "hello");
     }
 
-    private static final Payload VALID_PAYLOAD = Payload.newBuilder()
-            .setAnswer("Hello world")
-            .setSummary(Payload.Summary.newBuilder()
-                    .setNarrative("n")
-                    .addKeySignals(Payload.Summary.KeySignal.newBuilder()
-                            .setSignal("s").setSeverity("high").addCitations("c1").build())
-                    .build())
-            .setSuggestedResolution(Payload.SuggestedResolution.newBuilder()
-                    .setMark("SUSPECTED_FRAUD").setLabel("Suspected Fraud").setConfidence("medium").setRationale("r").build())
-            .addCitations(Payload.Citation.newBuilder().setId("c1").setSource("APP_EVENT_LOG").addFields("risk_score").build())
+    private static final CaseManagerAnswerPayload VALID_PAYLOAD = CaseManagerAnswerPayload.newBuilder()
+            .addKeySignals(CaseManagerAnswerPayload.KeySignal.newBuilder()
+                    .setSignal("s").addCitations("c1").build())
+            .addCitations(CaseManagerAnswerPayload.Citation.newBuilder()
+                    .setId("c1").setSource("APP_EVENT_LOG").addFields("risk_score").build())
             .build();
 
     @Test
-    void successfulStream_isParsedIntoDomainEvents_andToolEventsAreConsumedSilently() throws IOException {
+    void successfulStream_isParsedIntoDomainEvents_andToolAndPingEventsAreConsumedSilently() throws IOException {
         GrpcMlAgentClient client = startClientWith(observer -> {
-            observer.onNext(ChatEvent.newBuilder().setToken(Token.newBuilder().setDelta("Hello")).build());
-            observer.onNext(ChatEvent.newBuilder().setToken(Token.newBuilder().setDelta(" world")).build());
-            observer.onNext(ChatEvent.newBuilder()
-                    .setToolCall(ToolCall.newBuilder().setId("t1").setName("lookup")).build());
-            observer.onNext(ChatEvent.newBuilder()
-                    .setToolResult(ToolResult.newBuilder().setId("t1").setMs(12).setRowCount(3).setOk(true)).build());
-            observer.onNext(ChatEvent.newBuilder().setPayload(VALID_PAYLOAD).build());
-            observer.onNext(ChatEvent.newBuilder().setDone(Done.newBuilder()
-                    .setConversationId("conv-1").setContinuation("cont-1")
+            observer.onNext(AnswerEvent.newBuilder().setChunk(Chunk.newBuilder().setDelta("Hello")).build());
+            observer.onNext(AnswerEvent.newBuilder().setChunk(Chunk.newBuilder().setDelta(" world")).build());
+            observer.onNext(AnswerEvent.newBuilder()
+                    .setToolCall(ToolCall.newBuilder().setToolCallId("t1").setName("lookup")).build());
+            observer.onNext(AnswerEvent.newBuilder()
+                    .setToolResult(ToolResult.newBuilder().setToolCallId("t1").setMs(12).setRowCount(3)
+                            .setStatus(ToolResult.Status.STATUS_OK)).build());
+            observer.onNext(AnswerEvent.newBuilder().setPing(com.cmbotservice.mlagent.grpc.v1.Ping.newBuilder()).build());
+            observer.onNext(AnswerEvent.newBuilder().setPayload(AnswerPayload.newBuilder()
+                    .setCaseManagerAnswerPayload(VALID_PAYLOAD)).build());
+            observer.onNext(AnswerEvent.newBuilder().setDone(Done.newBuilder()
+                    .setStopReason(Done.StopReason.STOP_REASON_COMPLETED)
                     .setLatencyMs(100).setTokensIn(5).setTokensOut(10)).build());
             observer.onCompleted();
         });
@@ -114,49 +112,46 @@ class GrpcMlAgentClientTest {
                 .expectNextMatches(e -> e instanceof MlAgentStreamEvent.Token t
                         && t.sequence() == 2 && t.delta().equals(" world"))
                 .expectNextMatches(e -> e instanceof MlAgentStreamEvent.Payload p
-                        && p.payload().answer().equals("Hello world")
-                        && p.payload().suggestedResolution().mark().equals("SUSPECTED_FRAUD"))
+                        && p.payload().keySignals().get(0).signal().equals("s")
+                        && p.payload().citations().get(0).id().equals("c1"))
                 .expectNextMatches(e -> e instanceof MlAgentStreamEvent.Done d
-                        && d.conversationId().equals("conv-1") && d.continuation().equals("cont-1"))
+                        && !d.truncated() && d.latencyMs() == 100 && d.tokensIn() == 5 && d.tokensOut() == 10)
                 .verifyComplete();
     }
 
     @Test
     void requestFields_areMappedToTheProtoWireContract() throws IOException {
         GrpcMlAgentClient client = startClientWith(observer -> {
-            observer.onNext(ChatEvent.newBuilder().setDone(Done.newBuilder()
-                    .setConversationId("conv-1").setContinuation("cont-1")).build());
+            observer.onNext(AnswerEvent.newBuilder().setDone(Done.newBuilder()
+                    .setStopReason(Done.StopReason.STOP_REASON_COMPLETED)).build());
             observer.onCompleted();
         });
 
         client.streamResponse(request()).blockLast(Duration.ofSeconds(5));
 
-        ChatRequest sent = capturedRequest.get();
+        AskCaseManagerRequest sent = capturedRequest.get();
         assertThat(sent).isNotNull();
-        assertThat(sent.getContinuation()).isEqualTo("cont-0");
-        assertThat(sent.getConversationId()).isEqualTo("conv-0");
-        assertThat(sent.getSurface()).isEqualTo("case_manager");
-        assertThat(sent.getMessage()).isEqualTo("hello");
-        assertThat(sent.getTenantId()).isEqualTo("tenant-1");
-        assertThat(sent.getContext().getCaseId()).isEqualTo("case-1");
-        assertThat(sent.getContext().getEndUserId()).isEqualTo("gadi5");
-        assertThat(sent.getOptions().getIncludeResolutions()).isTrue();
-        assertThat(sent.getHistoryList())
-                .extracting(HistoryTurn::getRole, HistoryTurn::getContent)
-                .containsExactly(tuple("user", "hi"), tuple("assistant", "hello"));
+        assertThat(sent.getPrompt()).isEqualTo("hello");
+        assertThat(sent.getOperatorId()).isEqualTo("analyst-1");
+        assertThat(sent.getRequestContext().getTenant()).isEqualTo("tenant-1");
+        assertThat(sent.getRequestContext().getOrganization()).isEqualTo("org-1");
+        assertThat(sent.getRequestContext().getRequestId()).isEqualTo("corr-1");
+        assertThat(sent.getRequestContext().getAgentSessionId()).isEqualTo("req-1");
+        assertThat(sent.getCaseContext().getCaseId()).isEqualTo("case-1");
+        assertThat(sent.getCaseContext().getEndUserId()).isEqualTo("gadi5");
+        assertThat(sent.getHistoryList()).hasSize(2);
+        assertThat(sent.getHistory(0).getUser().getPrompt()).isEqualTo("hi");
+        assertThat(sent.getHistory(1).getAgent().getText()).isEqualTo("hello");
     }
 
     @Test
     void malformedPayload_keySignalMissingCitation_isMappedToMalformedResponseException() throws IOException {
-        Payload badPayload = Payload.newBuilder()
-                .setAnswer("a")
-                .setSummary(Payload.Summary.newBuilder()
-                        .addKeySignals(Payload.Summary.KeySignal.newBuilder()
-                                .setSignal("s").setSeverity("high").build())
-                        .build())
+        CaseManagerAnswerPayload badPayload = CaseManagerAnswerPayload.newBuilder()
+                .addKeySignals(CaseManagerAnswerPayload.KeySignal.newBuilder().setSignal("s").build())
                 .build();
         GrpcMlAgentClient client = startClientWith(observer -> {
-            observer.onNext(ChatEvent.newBuilder().setPayload(badPayload).build());
+            observer.onNext(AnswerEvent.newBuilder().setPayload(AnswerPayload.newBuilder()
+                    .setCaseManagerAnswerPayload(badPayload)).build());
             observer.onCompleted();
         });
 
@@ -167,78 +162,17 @@ class GrpcMlAgentClientTest {
     }
 
     @Test
-    void malformedPayload_unknownResolutionMark_isMappedToMalformedResponseException() throws IOException {
-        Payload badPayload = Payload.newBuilder()
-                .setAnswer("a")
-                .setSuggestedResolution(Payload.SuggestedResolution.newBuilder().setMark("Z").build())
-                .build();
+    void unsetAnswerEvent_isIgnoredRatherThanErroring() throws IOException {
         GrpcMlAgentClient client = startClientWith(observer -> {
-            observer.onNext(ChatEvent.newBuilder().setPayload(badPayload).build());
+            observer.onNext(AnswerEvent.newBuilder().build()); // no oneof case set
+            observer.onNext(AnswerEvent.newBuilder().setDone(Done.newBuilder()).build());
             observer.onCompleted();
         });
 
         StepVerifier.create(client.streamResponse(request()))
                 .expectNextMatches(e -> e instanceof MlAgentStreamEvent.Started)
-                .expectError(MlAgentMalformedResponseException.class)
-                .verify(Duration.ofSeconds(5));
-    }
-
-    /**
-     * The single-character codes (F/S/G/A/U/Y/B/T) are a different system's
-     * (APP_EVENT_UPDATE.CUSTOM_MARK) internal representation and, per the contract,
-     * never appear on this interface — so one showing up here is exactly as invalid as
-     * any other unrecognized string.
-     */
-    @Test
-    void malformedPayload_legacySingleCharacterMark_isMappedToMalformedResponseException() throws IOException {
-        Payload badPayload = Payload.newBuilder()
-                .setAnswer("a")
-                .setSuggestedResolution(Payload.SuggestedResolution.newBuilder().setMark("S").build())
-                .build();
-        GrpcMlAgentClient client = startClientWith(observer -> {
-            observer.onNext(ChatEvent.newBuilder().setPayload(badPayload).build());
-            observer.onCompleted();
-        });
-
-        StepVerifier.create(client.streamResponse(request()))
-                .expectNextMatches(e -> e instanceof MlAgentStreamEvent.Started)
-                .expectError(MlAgentMalformedResponseException.class)
-                .verify(Duration.ofSeconds(5));
-    }
-
-    /**
-     * {@code ANY} is documented as "filter-only" — the contract states the agent must
-     * never emit it, so its presence in a real response is itself a contract
-     * violation this backend should surface loudly, not silently accept.
-     */
-    @Test
-    void malformedPayload_filterOnlyAnyMark_isMappedToMalformedResponseException() throws IOException {
-        Payload badPayload = Payload.newBuilder()
-                .setAnswer("a")
-                .setSuggestedResolution(Payload.SuggestedResolution.newBuilder().setMark("ANY").build())
-                .build();
-        GrpcMlAgentClient client = startClientWith(observer -> {
-            observer.onNext(ChatEvent.newBuilder().setPayload(badPayload).build());
-            observer.onCompleted();
-        });
-
-        StepVerifier.create(client.streamResponse(request()))
-                .expectNextMatches(e -> e instanceof MlAgentStreamEvent.Started)
-                .expectError(MlAgentMalformedResponseException.class)
-                .verify(Duration.ofSeconds(5));
-    }
-
-    @Test
-    void eventWithNoOneofCaseSet_isMappedToMalformedResponseException() throws IOException {
-        GrpcMlAgentClient client = startClientWith(observer -> {
-            observer.onNext(ChatEvent.newBuilder().build()); // no oneof case set
-            observer.onCompleted();
-        });
-
-        StepVerifier.create(client.streamResponse(request()))
-                .expectNextMatches(e -> e instanceof MlAgentStreamEvent.Started)
-                .expectError(MlAgentMalformedResponseException.class)
-                .verify(Duration.ofSeconds(5));
+                .expectNextMatches(e -> e instanceof MlAgentStreamEvent.Done)
+                .verifyComplete();
     }
 
     @Test
@@ -297,27 +231,59 @@ class GrpcMlAgentClientTest {
 
     @ParameterizedTest(name = "in-stream error code {0} -> {1}")
     @CsvSource({
-            "401, com.cmbotservice.common.MlAgentRejectedException",
-            "403, com.cmbotservice.common.MlAgentRejectedException",
-            "404, com.cmbotservice.common.MlAgentRejectedException",
-            "422, com.cmbotservice.common.MlAgentRejectedException",
-            "429, com.cmbotservice.common.MlAgentCommunicationException",
-            "503, com.cmbotservice.common.MlAgentCommunicationException",
-            "4221, com.cmbotservice.common.MlAgentContinuationExpiredException",
-            "4222, com.cmbotservice.common.MlAgentContinuationExpiredException"
+            "ERROR_CODE_MODEL_REFUSED, ML_AGENT_REFUSED",
+            "ERROR_CODE_DATA_UNAVAILABLE, ML_AGENT_ERROR",
+            "ERROR_CODE_INTERNAL, INTERNAL_ERROR",
+            "ERROR_CODE_UNSPECIFIED, INTERNAL_ERROR"
     })
-    void inStreamErrorEvent_codeIsMappedToTheCorrespondingExceptionType(String code, String expectedExceptionClassName)
-            throws Exception {
-        Class<?> expectedType = Class.forName(expectedExceptionClassName);
+    void nonRetryableInStreamError_isMappedToMlAgentRejectedExceptionWithTheRightErrorCode(
+            String protoCode, String expectedErrorCode) throws Exception {
+        Error.Code code = Error.Code.valueOf(protoCode);
+        ErrorCode expected = ErrorCode.valueOf(expectedErrorCode);
         GrpcMlAgentClient client = startClientWith(observer -> {
-            observer.onNext(ChatEvent.newBuilder()
-                    .setError(Error.newBuilder().setCode(code).setMessage("simulated").build()).build());
+            observer.onNext(AnswerEvent.newBuilder()
+                    .setError(Error.newBuilder().setCode(code).setRetryable(false)).build());
             observer.onCompleted();
         });
 
         StepVerifier.create(client.streamResponse(request()))
                 .expectNextMatches(e -> e instanceof MlAgentStreamEvent.Started)
-                .expectErrorMatches(expectedType::isInstance)
+                .expectErrorSatisfies(err -> {
+                    assertThat(err).isInstanceOf(MlAgentRejectedException.class);
+                    assertThat(((MlAgentRejectedException) err).errorCode()).isEqualTo(expected);
+                })
                 .verify(Duration.ofSeconds(5));
+    }
+
+    @Test
+    void retryableInStreamError_isMappedToMlAgentCommunicationException() throws IOException {
+        GrpcMlAgentClient client = startClientWith(observer -> {
+            observer.onNext(AnswerEvent.newBuilder()
+                    .setError(Error.newBuilder().setCode(Error.Code.ERROR_CODE_DATA_UNAVAILABLE)
+                            .setRetryable(true)).build());
+            observer.onCompleted();
+        });
+
+        StepVerifier.create(client.streamResponse(request()))
+                .expectNextMatches(e -> e instanceof MlAgentStreamEvent.Started)
+                .expectError(MlAgentCommunicationException.class)
+                .verify(Duration.ofSeconds(5));
+    }
+
+    @Test
+    void agentHistoryTurn_isMappedToTheAgentOneofArm() throws IOException {
+        MlAgentRequest requestWithAgentTurn = new MlAgentRequest("tenant-1", "org-1", "case-1",
+                List.of(new MlAgentRequest.HistoryTurn("assistant", "hello there")),
+                "msg-1", "analyst-1", null, "corr-1", "req-1", "hi");
+        GrpcMlAgentClient client = startClientWith(observer -> {
+            observer.onNext(AnswerEvent.newBuilder().setDone(Done.newBuilder()).build());
+            observer.onCompleted();
+        });
+
+        client.streamResponse(requestWithAgentTurn).blockLast(Duration.ofSeconds(5));
+
+        ConversationTurn turn = capturedRequest.get().getHistory(0);
+        assertThat(turn.getTurnCase()).isEqualTo(ConversationTurn.TurnCase.AGENT);
+        assertThat(turn.getAgent().getText()).isEqualTo("hello there");
     }
 }

@@ -41,15 +41,7 @@ public record MlAgentProperties(
         Duration idleTimeout,
 
         @NotNull
-        DataSize grpcMaxInboundMessageSize,
-
-        /**
-         * Whether to ask the ML Agent to include a {@code suggestedResolution} in its
-         * {@code payload} event. The real contract frames this as an eval-mode toggle,
-         * not a per-message frontend choice, so it's a server-side default here —
-         * {@code true} since that content is clearly valuable for the case manager UI.
-         */
-        boolean includeResolutions
+        DataSize grpcMaxInboundMessageSize
 ) {
 
     public boolean isGrpcMode() {

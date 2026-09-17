@@ -28,7 +28,6 @@ public final class MdcContext {
     public static final String CORRELATION_ID = "correlationId";
     public static final String TENANT_ID = "tenantId";
     public static final String CASE_ID = "caseId";
-    public static final String CONVERSATION_ID = "conversationId";
 
     @PostConstruct
     void registerThreadLocalAccessors() {
@@ -36,14 +35,13 @@ public final class MdcContext {
         registry.registerThreadLocalAccessor(new MdcKeyAccessor(CORRELATION_ID));
         registry.registerThreadLocalAccessor(new MdcKeyAccessor(TENANT_ID));
         registry.registerThreadLocalAccessor(new MdcKeyAccessor(CASE_ID));
-        registry.registerThreadLocalAccessor(new MdcKeyAccessor(CONVERSATION_ID));
         // Registering accessors alone is not sufficient — Reactor only actually
         // captures/restores Context values around thread hops when automatic context
         // propagation is turned on. Boot *can* enable this itself given
         // io.micrometer:context-propagation on the classpath, but relying on that
-        // silently not happening is exactly how tenantId/caseId/conversationId ended
-        // up blank in every log line despite the registration above looking correct
-        // — so it's enabled explicitly here rather than assumed.
+        // silently not happening is exactly how tenantId/caseId ended up blank in
+        // every log line despite the registration above looking correct — so it's
+        // enabled explicitly here rather than assumed.
         Hooks.enableAutomaticContextPropagation();
     }
 

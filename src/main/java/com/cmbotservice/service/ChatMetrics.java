@@ -14,8 +14,8 @@ import java.util.concurrent.atomic.AtomicInteger;
  * Every method takes a fixed, low-cardinality argument (a small enum-like result
  * string) rather than exposing the registry itself — structurally impossible for a
  * caller to accidentally tag a metric with a high-cardinality value like
- * {@code conversationId}/{@code caseId}/{@code userId}, which Micrometer's own docs
- * warn can silently blow up a metrics backend.
+ * {@code caseId}/{@code userId}, which Micrometer's own docs warn can silently blow
+ * up a metrics backend.
  */
 @Component
 public class ChatMetrics {

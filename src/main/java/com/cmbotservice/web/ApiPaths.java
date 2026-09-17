@@ -1,8 +1,8 @@
 package com.cmbotservice.web;
 
 /**
- * Shared path constants. There is a single stateless endpoint — {@code tenantId},
- * {@code caseId}, and {@code conversationId} travel in the request body (see
+ * Shared path constants. There is a single stateless endpoint — {@code tenantId} and
+ * {@code caseId} travel in the request body (see
  * {@link com.cmbotservice.web.dto.ChatRequest}), not the URL, since there is no
  * backend-owned resource to nest a path under.
  */

@@ -19,7 +19,7 @@ import java.util.UUID;
  * thread hops later (see {@link MdcContext}), without leaking into any other request's
  * context.
  * <p>
- * {@code tenantId}/{@code caseId}/{@code conversationId} live in the request body
+ * {@code tenantId}/{@code caseId} live in the request body
  * (this service has no per-request URL path segments to parse them from), so they're
  * added to the same {@code Context} later, once the body is deserialized — see
  * {@code ChatOrchestrationService}.

@@ -9,17 +9,17 @@ package com.cmbotservice.mlagent;
  * state machine. Consumers pattern-match exhaustively over the four variants below;
  * the compiler enforces that every case is handled.
  * <p>
- * The real ML Agent's own {@code tool_call}/{@code tool_result} events are
- * deliberately <b>not</b> represented here at all — per the contract, they're
- * "rendered in the sandbox trace, logged in product." This service is the product,
- * not the sandbox, so {@code GrpcMlAgentClient}/{@link MockMlAgentClient} consume and
- * log them directly and never turn them into a domain event; nothing downstream of
- * this interface is meant to see them.
+ * The real ML Agent's own {@code tool_call}/{@code tool_result}/{@code ping} events are
+ * deliberately <b>not</b> represented here at all — {@code tool_call}/{@code tool_result}
+ * are "rendered in the sandbox trace, logged in product" per the contract, and
+ * {@code ping} is a transport-level keepalive with no content — this service is the
+ * product, not the sandbox, so {@code GrpcMlAgentClient}/{@link MockMlAgentClient}
+ * consume and log them directly and never turn them into a domain event; nothing
+ * downstream of this interface is meant to see them.
  * <p>
- * Notably, {@link Started} carries no conversation identifier: the real agent never
- * reveals one until the final {@link Done} event. An earlier, placeholder version of
- * this contract assumed the agent assigned one up front — it doesn't, so there is
- * nothing to hand back until the stream actually finishes.
+ * Notably, {@link Started} carries no conversation identifier: the real contract has no
+ * conversation/continuation identifier at all — {@code history} on the next request is
+ * the sole resumption mechanism.
  */
 public sealed interface MlAgentStreamEvent {
 
@@ -31,7 +31,7 @@ public sealed interface MlAgentStreamEvent {
     }
 
     /**
-     * One streamed fragment of the answer text (the real contract's {@code token}
+     * One streamed fragment of the answer text (the real contract's {@code chunk}
      * event, field {@code delta}). {@code sequence} is 1-based and strictly increasing.
      */
     record Token(String delta, int sequence) implements MlAgentStreamEvent {
@@ -45,11 +45,12 @@ public sealed interface MlAgentStreamEvent {
     }
 
     /**
-     * The response is complete; no further events will follow. Carries the
-     * authoritative conversation identifiers — this is the only point at which the
-     * real agent reveals them — plus usage/latency figures for observability.
+     * The response is complete; no further events will follow. Carries usage/latency
+     * figures for observability, plus whether generation was cut short
+     * ({@code truncated}, from the real contract's {@code stop_reason}) — the answer
+     * text received so far is still coherent and MUST be persisted, just incomplete.
      */
-    record Done(String conversationId, String continuation, long latencyMs, long tokensIn, long tokensOut)
+    record Done(long latencyMs, long tokensIn, long tokensOut, boolean truncated)
             implements MlAgentStreamEvent {
     }
 }

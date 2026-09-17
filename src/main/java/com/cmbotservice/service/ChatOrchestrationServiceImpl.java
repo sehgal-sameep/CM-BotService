@@ -3,7 +3,6 @@ package com.cmbotservice.service;
 import com.cmbotservice.common.ErrorCode;
 import com.cmbotservice.common.LogSanitizer;
 import com.cmbotservice.common.MlAgentCommunicationException;
-import com.cmbotservice.common.MlAgentContinuationExpiredException;
 import com.cmbotservice.common.MlAgentMalformedResponseException;
 import com.cmbotservice.common.MlAgentRejectedException;
 import com.cmbotservice.common.MlAgentTimeoutException;
@@ -62,10 +61,9 @@ import java.util.concurrent.atomic.AtomicReference;
  * Reactor's own propagation.
  * <p>
  * Stateless by design: nothing here is persisted or held in memory between requests.
- * Conversation identity is a pure pass-through — the real ML Agent only reveals its
- * authoritative {@code conversationId}/{@code continuation} on
- * {@link MlAgentStreamEvent.Done}, streamed straight back to the caller (via
- * {@link StreamCompleteEvent}) and then forgotten.
+ * The real ML Agent has no conversation/continuation identifier at all — resending the
+ * full {@code history} on the next request is the caller's sole resumption mechanism,
+ * and this service never assembles, stores, or replays that transcript itself.
  */
 @Service
 public class ChatOrchestrationServiceImpl implements ChatOrchestrationService {
@@ -103,8 +101,7 @@ public class ChatOrchestrationServiceImpl implements ChatOrchestrationService {
         return Flux.defer(() -> doStreamMessage(context, request))
                 .contextWrite(ctx -> ctx
                         .put(MdcContext.TENANT_ID, context.tenantId())
-                        .put(MdcContext.CASE_ID, context.caseId())
-                        .put(MdcContext.CONVERSATION_ID, request.conversationId() == null ? "" : request.conversationId()));
+                        .put(MdcContext.CASE_ID, context.caseId()));
     }
 
     private Flux<ServerSentEvent<Object>> doStreamMessage(RequestContext context, ChatRequest request) {
@@ -112,11 +109,6 @@ public class ChatOrchestrationServiceImpl implements ChatOrchestrationService {
         log.info("CHAT_REQUEST_RECEIVED messageId={} promptPreview='{}'", messageId, LogSanitizer.preview(request.message()));
         metrics.connectionOpened();
 
-        // conversationId/continuation start out as whatever the caller sent (echoed,
-        // unconfirmed — see StreamStartEvent) and only become authoritative once the
-        // ML Agent's Done event arrives, at which point these are overwritten.
-        AtomicReference<String> conversationIdRef = new AtomicReference<>(request.conversationId());
-        AtomicReference<String> continuationRef = new AtomicReference<>(request.continuation());
         AtomicInteger chunkCount = new AtomicInteger(0);
 
         Flux<MlAgentStreamEvent> mlEvents = request.message().length() > chatProperties.maxMessageLength()
@@ -126,12 +118,12 @@ public class ChatOrchestrationServiceImpl implements ChatOrchestrationService {
 
         return mlEvents
                 .doOnNext(event -> logIfStreamStarted(messageId, event))
-                .map(event -> toChatSseEvent(event, messageId, chunkCount, conversationIdRef, continuationRef))
+                .map(event -> toChatSseEvent(event, messageId, chunkCount))
                 .onErrorResume(AbortedException.class, ex -> {
                     log.debug("Client aborted mid-stream for messageId={}", messageId);
                     return Flux.empty();
                 })
-                .onErrorResume(ex -> Flux.just(toErrorEvent(messageId, conversationIdRef, ex)))
+                .onErrorResume(ex -> Flux.just(toErrorEvent(messageId, ex)))
                 .index()
                 .map(indexed -> SseEvents.toServerSentEvent(indexed.getT1(), indexed.getT2()))
                 .doOnCancel(() -> {
@@ -149,10 +141,8 @@ public class ChatOrchestrationServiceImpl implements ChatOrchestrationService {
      */
     private Flux<MlAgentStreamEvent> callMlAgent(RequestContext context, ChatRequest request, String messageId) {
         MlAgentRequest mlRequest = new MlAgentRequest(
-                context.tenantId(), context.caseId(), request.continuation(), request.conversationId(),
-                toMlAgentHistory(request.history()), messageId,
-                context.userId(), request.endUserId(), context.correlationId(), request.requestId(),
-                MlAgentRequest.SURFACE_CASE_MANAGER, mlAgentProperties.includeResolutions(), request.message());
+                context.tenantId(), context.organization(), context.caseId(), toMlAgentHistory(request.history()), messageId,
+                context.userId(), request.endUserId(), context.correlationId(), request.requestId(), request.message());
 
         AtomicBoolean firstEventSeen = new AtomicBoolean(false);
         AtomicReference<Throwable> lastError = new AtomicReference<>();
@@ -211,9 +201,8 @@ public class ChatOrchestrationServiceImpl implements ChatOrchestrationService {
     private static boolean isRetryable(Throwable ex) {
         // Connection-level failures and "reached the agent but it said something went
         // wrong server-side" are retryable. Timeouts, malformed responses, explicit
-        // rejections (401/403/404/422), expired continuations, and our own circuit
-        // breaker/bulkhead are not — see the class Javadoc on each exception type for
-        // why.
+        // rejections/refusals, and our own circuit breaker/bulkhead are not — see the
+        // class Javadoc on each exception type for why.
         return ex instanceof MlAgentUnavailableException || ex instanceof MlAgentCommunicationException;
     }
 
@@ -262,8 +251,6 @@ public class ChatOrchestrationServiceImpl implements ChatOrchestrationService {
             log.warn("CIRCUIT_BREAKER_OPEN messageId={} durationMs={}", messageId, durationMs);
         } else if (error instanceof BulkheadFullException) {
             log.warn("CONCURRENCY_LIMIT_REACHED messageId={} durationMs={}", messageId, durationMs);
-        } else if (error instanceof MlAgentContinuationExpiredException) {
-            log.warn("CONTINUATION_EXPIRED messageId={} durationMs={}", messageId, durationMs);
         } else if (error instanceof MlAgentRejectedException rejected) {
             log.warn("ML_AGENT_REJECTED messageId={} durationMs={} errorCode={}", messageId, durationMs, rejected.errorCode());
         } else if (error != null) {
@@ -272,27 +259,20 @@ public class ChatOrchestrationServiceImpl implements ChatOrchestrationService {
         }
     }
 
-    private static ChatSseEvent toChatSseEvent(MlAgentStreamEvent event, String messageId, AtomicInteger chunkCount,
-                                                AtomicReference<String> conversationIdRef, AtomicReference<String> continuationRef) {
+    private static ChatSseEvent toChatSseEvent(MlAgentStreamEvent event, String messageId, AtomicInteger chunkCount) {
         return switch (event) {
-            case MlAgentStreamEvent.Started ignored ->
-                    new StreamStartEvent(conversationIdRef.get(), messageId, Instant.now());
+            case MlAgentStreamEvent.Started ignored -> new StreamStartEvent(messageId, Instant.now());
             case MlAgentStreamEvent.Token token -> {
                 chunkCount.incrementAndGet();
-                yield new MessageChunkEvent(conversationIdRef.get(), messageId, token.sequence(), token.delta(), Instant.now());
+                yield new MessageChunkEvent(messageId, token.sequence(), token.delta(), Instant.now());
             }
-            case MlAgentStreamEvent.Payload payload ->
-                    new CaseSummaryEvent(conversationIdRef.get(), messageId, payload.payload(), Instant.now());
-            case MlAgentStreamEvent.Done done -> {
-                conversationIdRef.set(done.conversationId());
-                continuationRef.set(done.continuation());
-                yield new StreamCompleteEvent(
-                        done.conversationId(), done.continuation(), messageId, chunkCount.get(), Instant.now());
-            }
+            case MlAgentStreamEvent.Payload payload -> new CaseSummaryEvent(messageId, payload.payload(), Instant.now());
+            case MlAgentStreamEvent.Done done ->
+                    new StreamCompleteEvent(messageId, chunkCount.get(), done.truncated(), Instant.now());
         };
     }
 
-    private static ChatSseEvent toErrorEvent(String messageId, AtomicReference<String> conversationIdRef, Throwable ex) {
+    private static ChatSseEvent toErrorEvent(String messageId, Throwable ex) {
         ErrorCode code;
         String message;
         if (ex instanceof MlAgentTimeoutException) {
@@ -301,9 +281,6 @@ public class ChatOrchestrationServiceImpl implements ChatOrchestrationService {
         } else if (ex instanceof MlAgentUnavailableException) {
             code = ErrorCode.ML_AGENT_UNAVAILABLE;
             message = "The AI agent could not be reached.";
-        } else if (ex instanceof MlAgentContinuationExpiredException) {
-            code = ErrorCode.CONTINUATION_EXPIRED;
-            message = "Your conversation has expired; please start a new one.";
         } else if (ex instanceof MlAgentRejectedException rejected) {
             code = rejected.errorCode();
             message = "The AI agent could not process this request.";
@@ -323,6 +300,6 @@ public class ChatOrchestrationServiceImpl implements ChatOrchestrationService {
             code = ErrorCode.INTERNAL_ERROR;
             message = "An unexpected error occurred.";
         }
-        return new StreamErrorEvent(conversationIdRef.get(), messageId, code, message, Instant.now());
+        return new StreamErrorEvent(messageId, code, message, Instant.now());
     }
 }

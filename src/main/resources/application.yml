@@ -125,10 +125,6 @@ ml-agent:
   first-response-timeout: 5s
   idle-timeout: 15s
   grpc-max-inbound-message-size: 1MB
-  # Ask the ML Agent to include a suggestedResolution in its payload event. The real
-  # contract frames this as an eval-mode toggle; defaulted on since that content is
-  # clearly valuable for the case manager UI.
-  include-resolutions: true
 
 resilience:
   circuit-breaker:
@@ -167,6 +163,6 @@ logging:
     # It auto-detects a real terminal and no-ops (plain text, no escape codes) when output isn't a console
     # (e.g. redirected to a file or picked up by a log aggregator), so this is safe for any environment.
     # %clr(%-5level) with no color argument uses Boot's built-in per-level coloring: ERROR=red, WARN=yellow, else=green.
-    console: "%clr(%d{yyyy-MM-dd HH:mm:ss.SSS}){faint} %clr([%thread]){faint} %clr(%-5level) %clr([corrId=%X{correlationId:-},tenant=%X{tenantId:-},case=%X{caseId:-},conv=%X{conversationId:-},trace=%X{traceId:-},span=%X{spanId:-}]){cyan} %clr(%logger{36}){blue} %clr(-){faint} %msg%n%wEx"
+    console: "%clr(%d{yyyy-MM-dd HH:mm:ss.SSS}){faint} %clr([%thread]){faint} %clr(%-5level) %clr([corrId=%X{correlationId:-},tenant=%X{tenantId:-},case=%X{caseId:-},trace=%X{traceId:-},span=%X{spanId:-}]){cyan} %clr(%logger{36}){blue} %clr(-){faint} %msg%n%wEx"
   level:
     com.cmbotservice: DEBUG

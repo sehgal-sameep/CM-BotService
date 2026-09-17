@@ -13,12 +13,12 @@ public enum ErrorCode {
     ML_AGENT_ERROR,
     CONCURRENCY_LIMIT_REACHED,
     /**
-     * The ML Agent's {@code continuation}/{@code conversationId} was expired,
-     * undecryptable, or tampered (its 4221/4222 codes) — the frontend must discard
-     * whatever it was holding and start a new conversation. Distinct from
-     * {@link #ML_AGENT_ERROR} because the remediation is different.
+     * The ML Agent explicitly refused to process the request (its
+     * {@code ERROR_CODE_MODEL_REFUSED}) — never retryable. Distinct from
+     * {@link #ML_AGENT_ERROR} because the agent understood the request and declined it,
+     * rather than failing to process it.
      */
-    CONTINUATION_EXPIRED,
+    ML_AGENT_REFUSED,
     /**
      * No valid BFF session could be established for this request (missing cookie, no
      * matching Redis record, or an expired access token) — see

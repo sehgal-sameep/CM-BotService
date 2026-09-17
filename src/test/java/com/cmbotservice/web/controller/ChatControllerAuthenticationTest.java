@@ -1,5 +1,6 @@
 package com.cmbotservice.web.controller;
 
+import com.cmbotservice.context.RequestHeaders;
 import com.cmbotservice.security.SessionContext;
 import com.cmbotservice.security.SessionStore;
 import org.junit.jupiter.api.BeforeEach;
@@ -58,8 +59,10 @@ class ChatControllerAuthenticationTest {
     void missingSessionCookie_returns401Unauthenticated() {
         restTestClient.post()
                 .uri("/api/v1/chat/messages")
+                .header(RequestHeaders.TENANT_ID, "tenant-1")
+                .header(RequestHeaders.ORGANIZATION_ID, "org-1")
                 .contentType(MediaType.APPLICATION_JSON)
-                .body(Map.of("tenantId", "tenant-1", "caseId", "case-1", "message", "hello"))
+                .body(Map.of("caseId", "case-1", "message", "hello"))
                 .exchange()
                 .expectStatus().isUnauthorized()
                 .expectBody()
@@ -74,8 +77,10 @@ class ChatControllerAuthenticationTest {
                 .uri("/api/v1/chat/messages")
                 .header("Cookie", SESSION_COOKIE + "=abc123; " + CSRF_COOKIE + "=" + CSRF_VALUE)
                 .header(CSRF_HEADER, "wrong-value")
+                .header(RequestHeaders.TENANT_ID, "tenant-1")
+                .header(RequestHeaders.ORGANIZATION_ID, "org-1")
                 .contentType(MediaType.APPLICATION_JSON)
-                .body(Map.of("tenantId", "tenant-1", "caseId", "case-1", "message", "hello"))
+                .body(Map.of("caseId", "case-1", "message", "hello"))
                 .exchange()
                 .expectStatus().isForbidden()
                 .expectBody()
@@ -90,9 +95,11 @@ class ChatControllerAuthenticationTest {
                 .uri("/api/v1/chat/messages")
                 .header("Cookie", SESSION_COOKIE + "=abc123; " + CSRF_COOKIE + "=" + CSRF_VALUE)
                 .header(CSRF_HEADER, CSRF_VALUE)
+                .header(RequestHeaders.TENANT_ID, "tenant-1")
+                .header(RequestHeaders.ORGANIZATION_ID, "org-1")
                 .contentType(MediaType.APPLICATION_JSON)
                 .accept(MediaType.TEXT_EVENT_STREAM)
-                .body(Map.of("tenantId", "tenant-1", "caseId", "case-1", "message", "trigger:empty"))
+                .body(Map.of("caseId", "case-1", "message", "trigger:empty"))
                 .exchange()
                 .expectStatus().isOk()
                 .expectBody(String.class)

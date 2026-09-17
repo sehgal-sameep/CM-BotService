@@ -9,8 +9,6 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.client.RestTestClient;
 
 import java.util.Map;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -45,9 +43,11 @@ class ChatControllerTest {
         restTestClient.post()
                 .uri("/api/v1/chat/messages")
                 .header(RequestHeaders.CORRELATION_ID, "test-corr-abc")
+                .header(RequestHeaders.TENANT_ID, "tenant-1")
+                .header(RequestHeaders.ORGANIZATION_ID, "org-1")
                 .contentType(MediaType.APPLICATION_JSON)
                 .accept(MediaType.TEXT_EVENT_STREAM)
-                .body(Map.of("tenantId", "tenant-1", "caseId", "case-1", "message", "Summarize this case for me"))
+                .body(Map.of("caseId", "case-1", "message", "Summarize this case for me"))
                 .exchange()
                 .expectStatus().isOk()
                 .expectHeader().valueEquals(RequestHeaders.CORRELATION_ID, "test-corr-abc")
@@ -65,51 +65,15 @@ class ChatControllerTest {
     }
 
     @Test
-    void continuationRoundTrips_acrossTwoFollowUpRequests() {
-        String firstBody = restTestClient.post()
-                .uri("/api/v1/chat/messages")
-                .contentType(MediaType.APPLICATION_JSON)
-                .accept(MediaType.TEXT_EVENT_STREAM)
-                .body(Map.of("tenantId", "tenant-1", "caseId", "case-1", "message", "Summarize this case for me"))
-                .exchange()
-                .expectStatus().isOk()
-                .expectBody(String.class)
-                .returnResult()
-                .getResponseBody();
-
-        assertThat(firstBody).isNotNull().contains("event:payload", "event:stream-complete");
-
-        String conversationId = extractLastQuotedValue(firstBody, "conversationId");
-        String continuation = extractLastQuotedValue(firstBody, "continuation");
-        assertThat(conversationId).isNotBlank();
-        assertThat(continuation).isNotBlank();
-
-        restTestClient.post()
-                .uri("/api/v1/chat/messages")
-                .contentType(MediaType.APPLICATION_JSON)
-                .accept(MediaType.TEXT_EVENT_STREAM)
-                .body(Map.of(
-                        "tenantId", "tenant-1", "caseId", "case-1",
-                        "conversationId", conversationId, "continuation", continuation,
-                        "message", "Which rules were triggered?"))
-                .exchange()
-                .expectStatus().isOk()
-                .expectBody(String.class)
-                .value(body -> {
-                    assertThat(body).contains("event:stream-complete");
-                    assertThat(extractLastQuotedValue(body, "conversationId")).isEqualTo(conversationId);
-                    assertThat(extractLastQuotedValue(body, "continuation")).isEqualTo(continuation);
-                });
-    }
-
-    @Test
     void requestWithHistory_isAcceptedAndStreamsNormally() {
         restTestClient.post()
                 .uri("/api/v1/chat/messages")
+                .header(RequestHeaders.TENANT_ID, "tenant-1")
+                .header(RequestHeaders.ORGANIZATION_ID, "org-1")
                 .contentType(MediaType.APPLICATION_JSON)
                 .accept(MediaType.TEXT_EVENT_STREAM)
                 .body(Map.of(
-                        "tenantId", "tenant-1", "caseId", "case-1",
+                        "caseId", "case-1",
                         "history", java.util.List.of(
                                 Map.of("role", "user", "content", "Summarize this case for me"),
                                 Map.of("role", "assistant", "content", "Here's a summary...")),
@@ -120,21 +84,14 @@ class ChatControllerTest {
                 .value(body -> assertThat(body).contains("event:stream-start", "event:stream-complete"));
     }
 
-    private static String extractLastQuotedValue(String sseBody, String fieldName) {
-        Matcher matcher = Pattern.compile("\"" + fieldName + "\":\"([^\"]*)\"").matcher(sseBody);
-        String last = null;
-        while (matcher.find()) {
-            last = matcher.group(1);
-        }
-        return last;
-    }
-
     @Test
     void blankMessage_returns400ValidationError() {
         restTestClient.post()
                 .uri("/api/v1/chat/messages")
+                .header(RequestHeaders.TENANT_ID, "tenant-1")
+                .header(RequestHeaders.ORGANIZATION_ID, "org-1")
                 .contentType(MediaType.APPLICATION_JSON)
-                .body(Map.of("tenantId", "tenant-1", "caseId", "case-1", "message", ""))
+                .body(Map.of("caseId", "case-1", "message", ""))
                 .exchange()
                 .expectStatus().isBadRequest()
                 .expectBody()
@@ -142,9 +99,37 @@ class ChatControllerTest {
     }
 
     @Test
-    void missingTenantId_returns400ValidationError() {
+    void missingCaseId_returns400ValidationError() {
         restTestClient.post()
                 .uri("/api/v1/chat/messages")
+                .header(RequestHeaders.TENANT_ID, "tenant-1")
+                .header(RequestHeaders.ORGANIZATION_ID, "org-1")
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of("message", "hello"))
+                .exchange()
+                .expectStatus().isBadRequest()
+                .expectBody()
+                .jsonPath("$.errorCode").isEqualTo("VALIDATION_ERROR");
+    }
+
+    @Test
+    void missingTenantIdHeader_returns400ValidationError() {
+        restTestClient.post()
+                .uri("/api/v1/chat/messages")
+                .header(RequestHeaders.ORGANIZATION_ID, "org-1")
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of("caseId", "case-1", "message", "hello"))
+                .exchange()
+                .expectStatus().isBadRequest()
+                .expectBody()
+                .jsonPath("$.errorCode").isEqualTo("VALIDATION_ERROR");
+    }
+
+    @Test
+    void missingOrganizationIdHeader_returns400ValidationError() {
+        restTestClient.post()
+                .uri("/api/v1/chat/messages")
+                .header(RequestHeaders.TENANT_ID, "tenant-1")
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(Map.of("caseId", "case-1", "message", "hello"))
                 .exchange()
@@ -157,9 +142,11 @@ class ChatControllerTest {
     void mlAgentFailure_streamsAnErrorEventInsteadOfAnHttpErrorStatus() {
         restTestClient.post()
                 .uri("/api/v1/chat/messages")
+                .header(RequestHeaders.TENANT_ID, "tenant-1")
+                .header(RequestHeaders.ORGANIZATION_ID, "org-1")
                 .contentType(MediaType.APPLICATION_JSON)
                 .accept(MediaType.TEXT_EVENT_STREAM)
-                .body(Map.of("tenantId", "tenant-1", "caseId", "case-1", "message", "trigger:error"))
+                .body(Map.of("caseId", "case-1", "message", "trigger:error"))
                 .exchange()
                 .expectStatus().isOk()
                 .expectBody(String.class)
@@ -170,9 +157,11 @@ class ChatControllerTest {
     void emptyResponseScenario_streamsStartThenCompleteWithNoChunks() {
         restTestClient.post()
                 .uri("/api/v1/chat/messages")
+                .header(RequestHeaders.TENANT_ID, "tenant-1")
+                .header(RequestHeaders.ORGANIZATION_ID, "org-1")
                 .contentType(MediaType.APPLICATION_JSON)
                 .accept(MediaType.TEXT_EVENT_STREAM)
-                .body(Map.of("tenantId", "tenant-1", "caseId", "case-1", "message", "trigger:empty"))
+                .body(Map.of("caseId", "case-1", "message", "trigger:empty"))
                 .exchange()
                 .expectStatus().isOk()
                 .expectBody(String.class)

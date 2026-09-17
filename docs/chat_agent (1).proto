@@ -1,18 +1,11 @@
 syntax = "proto3";
 
-// Live contract for the ML Agent's `ChatAgent.AskCaseManager` RPC — server-to-server,
-// gRPC transport. Thoughtful Labs' own finalized 3-file contract (this file,
-// case_manager.proto, common.proto — see ../../docs for the originals as received,
-// and ../../docs/ARCHITECTURE.md §2 for background). Generated Java sources land
-// under target/generated-sources/protobuf — see GrpcMlAgentClient for the mapping
-// to/from this backend's internal MlAgentRequest/MlAgentStreamEvent domain types.
+package agenticbotservice.mlagent.v1;
 
-package cmbotservice.mlagent.v1;
+import "agent/v1/common.proto";
+import "agent/v1/case_manager.proto";
 
-import "common.proto";
-import "case_manager.proto";
-
-option java_package = "com.cmbotservice.mlagent.grpc.v1";
+option java_package = "com.agenticbotservice.mlagent.grpc.v1";
 option java_multiple_files = true;
 
 service ChatAgent {

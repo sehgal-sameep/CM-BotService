@@ -4,18 +4,19 @@ import java.time.Instant;
 
 /**
  * Payload for the {@link SseEventType#STREAM_COMPLETE} event: the assistant's response
- * finished successfully. {@code totalChunks} may be 0 for an empty response.
+ * finished. {@code totalChunks} may be 0 for an empty response. {@code truncated} is
+ * true when the ML Agent cut generation short (its {@code stop_reason}) — the text
+ * already streamed is still coherent, just incomplete.
  * <p>
- * {@code conversationId} and {@code continuation} here <b>are</b> authoritative — the
- * real ML Agent only reveals them on its final {@code done} event, which this maps
- * directly from. The caller must send whichever of these it received back on its next
- * message (see {@code ChatRequest}) — this backend does not remember either one.
+ * There is no conversation/continuation identifier to hand back here — the real ML
+ * Agent's contract has none; the caller resumes a conversation by resending the full
+ * {@code history} (see {@code ChatRequest}), which this backend never assembles,
+ * stores, or replays itself.
  */
 public record StreamCompleteEvent(
-        String conversationId,
-        String continuation,
         String messageId,
         int totalChunks,
+        boolean truncated,
         Instant timestamp
 ) implements ChatSseEvent {
 }

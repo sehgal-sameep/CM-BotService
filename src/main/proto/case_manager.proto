@@ -1,0 +1,66 @@
+syntax = "proto3";
+
+package cmbotservice.mlagent.v1;
+
+import "common.proto";
+
+option java_package = "com.cmbotservice.mlagent.grpc.v1";
+option java_multiple_files = true;
+
+// Case Manager–specific request and payload types.
+
+message AskCaseManagerRequest {
+  // Represents the context of the case being processed by the ML Agent.
+  message CaseContext {
+    // Identifier of the case being processed.
+    string case_id = 1;
+
+    // Optional identifier of the end user associated with the case.
+    string end_user_id = 2;
+  }
+
+  AgentRequestContext request_context = 1;
+
+  // Identifier of the operator making the request.
+  string operator_id = 2;
+
+  // The analyst's message to be processed by the ML Agent. Flattened to a
+  // plain string (was briefly a structured AgentRequestPayload during
+  // TF Labs' own cleanup pass; confirmed as a leftover, never finalized).
+  string prompt = 3;
+
+  // Context of the case being processed by the ML Agent.
+  CaseContext case_context = 4;
+
+  // Existing conversation transcript, when supplied by the caller.
+  repeated ConversationTurn history = 5;
+}
+
+// Structured response needing rendered UI components produced by the ML Agent.
+message CaseManagerAnswerPayload {
+  message Citation {
+    // Referenced from KeySignal.citations.
+    string id = 1;
+
+    // Tool or source the evidence came from, e.g. "getCase".
+    string source = 2;
+
+    // Field paths within the source, e.g. "riskContributorsList[0].name".
+    repeated string fields = 3;
+  }
+
+  message KeySignal {
+    // Key signal identified by the ML Agent.
+    string signal = 1;
+
+    // Citation ids supporting the signal. Clients MUST tolerate ids that
+    // do not resolve to an entry in `citations`.
+    repeated string citations = 2;
+  }
+
+  // Structured representation of the ML Agent's response's key signals.
+  repeated KeySignal key_signals = 1;
+
+  // References supporting the ML Agent's response.
+  repeated Citation citations = 2;
+}

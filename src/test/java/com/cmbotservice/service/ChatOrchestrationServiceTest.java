@@ -2,7 +2,6 @@ package com.cmbotservice.service;
 
 import com.cmbotservice.common.ErrorCode;
 import com.cmbotservice.common.MlAgentCommunicationException;
-import com.cmbotservice.common.MlAgentContinuationExpiredException;
 import com.cmbotservice.common.MlAgentRejectedException;
 import com.cmbotservice.common.MlAgentUnavailableException;
 import com.cmbotservice.config.ChatProperties;
@@ -50,7 +49,7 @@ class ChatOrchestrationServiceTest {
     private final MlAgentProperties mlAgentProperties = new MlAgentProperties(
             "mock", "localhost", 9090,
             Duration.ofMillis(300), Duration.ofMillis(300),
-            DataSize.ofKilobytes(256), true);
+            DataSize.ofKilobytes(256));
 
     private ChatOrchestrationService newService(CircuitBreaker cb, Bulkhead bh, int maxRetryAttempts,
                                                  ChatProperties chatProperties, MlAgentClient client) {
@@ -62,11 +61,11 @@ class ChatOrchestrationServiceTest {
     }
 
     private static RequestContext context() {
-        return new RequestContext("tenant-1", "case-1", "analyst-1", "corr-1");
+        return new RequestContext("tenant-1", "case-1", "org-1", "analyst-1", "corr-1");
     }
 
     private static ChatRequest chatRequest(String message) {
-        return new ChatRequest("tenant-1", "case-1", null, null, null, "req-1", null, message);
+        return new ChatRequest("case-1", null, "req-1", null, message);
     }
 
     private static ChatProperties defaultChatProperties() {
@@ -83,7 +82,7 @@ class ChatOrchestrationServiceTest {
         // differently on each attempt.
         MlAgentClient flakyThenSucceeds = request -> Flux.defer(() -> attempts.incrementAndGet() < 3
                 ? Flux.error(new MlAgentUnavailableException("transient connection failure"))
-                : Flux.just(new MlAgentStreamEvent.Started(), new MlAgentStreamEvent.Done("conv-1", "cont-1", 0, 0, 0)));
+                : Flux.just(new MlAgentStreamEvent.Started(), new MlAgentStreamEvent.Done(0, 0, 0, false)));
         ChatOrchestrationService service = newService(
                 CircuitBreaker.ofDefaults("t1"), Bulkhead.ofDefaults("t1"), 5, defaultChatProperties(), flakyThenSucceeds);
 
@@ -209,7 +208,7 @@ class ChatOrchestrationServiceTest {
         AtomicInteger callCount = new AtomicInteger();
         MlAgentClient shouldNeverBeCalled = request -> {
             callCount.incrementAndGet();
-            return Flux.just(new MlAgentStreamEvent.Started(), new MlAgentStreamEvent.Done("conv-1", "cont-1", 0, 0, 0));
+            return Flux.just(new MlAgentStreamEvent.Started(), new MlAgentStreamEvent.Done(0, 0, 0, false));
         };
         ChatProperties tinyLimit = new ChatProperties(5, Duration.ofSeconds(10));
         ChatOrchestrationService service = newService(
@@ -244,43 +243,41 @@ class ChatOrchestrationServiceTest {
     }
 
     @Test
-    void continuationExpiredException_isNeverRetriedAndMapsToContinuationExpired() {
+    void refusedException_isNeverRetriedAndMapsToMlAgentRefused() {
         AtomicInteger attempts = new AtomicInteger();
-        MlAgentClient alwaysExpired = request -> {
+        MlAgentClient alwaysRefused = request -> {
             attempts.incrementAndGet();
             return Flux.concat(
                     Mono.just(new MlAgentStreamEvent.Started()),
-                    Flux.error(new MlAgentContinuationExpiredException("continuation expired, start a new conversation")));
+                    Flux.error(new MlAgentRejectedException(ErrorCode.ML_AGENT_REFUSED, "the model refused to answer")));
         };
         ChatOrchestrationService service = newService(
-                CircuitBreaker.ofDefaults("t7"), Bulkhead.ofDefaults("t7"), 5, defaultChatProperties(), alwaysExpired);
+                CircuitBreaker.ofDefaults("t7"), Bulkhead.ofDefaults("t7"), 5, defaultChatProperties(), alwaysRefused);
 
         List<ServerSentEvent<Object>> events = service.streamMessage(context(), chatRequest("hello"))
                 .collectList().block(Duration.ofSeconds(5));
 
         assertThat(attempts.get()).isEqualTo(1);
         assertThat(events).isNotNull().anySatisfy(e -> assertThat(e.data()).isInstanceOfSatisfying(
-                StreamErrorEvent.class, err -> assertThat(err.errorCode()).isEqualTo(ErrorCode.CONTINUATION_EXPIRED)));
+                StreamErrorEvent.class, err -> assertThat(err.errorCode()).isEqualTo(ErrorCode.ML_AGENT_REFUSED)));
     }
 
     @Test
-    void history_isForwardedToTheMlAgentRequestUntouched_alongsideContinuationAndConversationId() {
+    void history_isForwardedToTheMlAgentRequestUntouched() {
         AtomicReference<MlAgentRequest> captured = new AtomicReference<>();
         MlAgentClient capturing = request -> {
             captured.set(request);
-            return Flux.just(new MlAgentStreamEvent.Started(), new MlAgentStreamEvent.Done("conv-1", "cont-1", 0, 0, 0));
+            return Flux.just(new MlAgentStreamEvent.Started(), new MlAgentStreamEvent.Done(0, 0, 0, false));
         };
         ChatOrchestrationService service = newService(
                 CircuitBreaker.ofDefaults("t8"), Bulkhead.ofDefaults("t8"), 5, defaultChatProperties(), capturing);
-        ChatRequest request = new ChatRequest("tenant-1", "case-1", "conv-0", "cont-0",
+        ChatRequest request = new ChatRequest("case-1",
                 List.of(new HistoryTurn("user", "hi"), new HistoryTurn("assistant", "hello")),
                 "req-1", null, "hello");
 
         service.streamMessage(context(), request).collectList().block(Duration.ofSeconds(5));
 
         assertThat(captured.get()).isNotNull();
-        assertThat(captured.get().continuation()).isEqualTo("cont-0");
-        assertThat(captured.get().conversationId()).isEqualTo("conv-0");
         assertThat(captured.get().history()).containsExactly(
                 new MlAgentRequest.HistoryTurn("user", "hi"),
                 new MlAgentRequest.HistoryTurn("assistant", "hello"));
@@ -291,7 +288,7 @@ class ChatOrchestrationServiceTest {
         AtomicReference<MlAgentRequest> captured = new AtomicReference<>();
         MlAgentClient capturing = request -> {
             captured.set(request);
-            return Flux.just(new MlAgentStreamEvent.Started(), new MlAgentStreamEvent.Done("conv-1", "cont-1", 0, 0, 0));
+            return Flux.just(new MlAgentStreamEvent.Started(), new MlAgentStreamEvent.Done(0, 0, 0, false));
         };
         ChatOrchestrationService service = newService(
                 CircuitBreaker.ofDefaults("t9"), Bulkhead.ofDefaults("t9"), 5, defaultChatProperties(), capturing);

@@ -1,7 +1,6 @@
 package com.cmbotservice.mlagent;
 
 import com.cmbotservice.common.MlAgentCommunicationException;
-import com.cmbotservice.common.MlAgentContinuationExpiredException;
 import com.cmbotservice.common.MlAgentRejectedException;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Flux;
@@ -9,21 +8,14 @@ import reactor.test.StepVerifier;
 
 import java.time.Duration;
 import java.util.List;
-import java.util.UUID;
-
-import static org.assertj.core.api.Assertions.assertThat;
 
 class MockMlAgentClientTest {
 
     private final MockMlAgentClient client = new MockMlAgentClient(5L, 5L);
 
     private MlAgentRequest request(String message) {
-        return request(message, "conv-1", "cont-1");
-    }
-
-    private MlAgentRequest request(String message, String conversationId, String continuation) {
-        return new MlAgentRequest("tenant-1", "case-1", continuation, conversationId, List.of(), "msg-1", "analyst-1",
-                null, "corr-1", "req-1", MlAgentRequest.SURFACE_CASE_MANAGER, true, message);
+        return new MlAgentRequest("tenant-1", "org-1", "case-1", List.of(), "msg-1", "analyst-1",
+                null, "corr-1", "req-1", message);
     }
 
     @Test
@@ -34,11 +26,8 @@ class MockMlAgentClientTest {
                 .expectNextMatches(e -> e instanceof MlAgentStreamEvent.Started)
                 .thenConsumeWhile(e -> e instanceof MlAgentStreamEvent.Token)
                 .expectNextMatches(e -> e instanceof MlAgentStreamEvent.Payload payload
-                        && payload.payload().summary().keySignals().stream()
-                                .allMatch(signal -> !signal.citations().isEmpty())
-                        && CaseSummaryPayload.KNOWN_RESOLUTION_MARKS.contains(payload.payload().suggestedResolution().mark()))
-                .expectNextMatches(e -> e instanceof MlAgentStreamEvent.Done done
-                        && done.conversationId().equals("conv-1") && done.continuation().equals("cont-1"))
+                        && payload.payload().keySignals().stream().allMatch(signal -> !signal.citations().isEmpty()))
+                .expectNextMatches(e -> e instanceof MlAgentStreamEvent.Done done && !done.truncated())
                 .verifyComplete();
     }
 
@@ -69,14 +58,6 @@ class MockMlAgentClientTest {
         StepVerifier.create(client.streamResponse(request("trigger:rejected")))
                 .expectNextMatches(e -> e instanceof MlAgentStreamEvent.Started)
                 .expectError(MlAgentRejectedException.class)
-                .verify(Duration.ofSeconds(2));
-    }
-
-    @Test
-    void continuationExpiredScenario_emitsStartedThenErrorsWithMlAgentContinuationExpiredException() {
-        StepVerifier.create(client.streamResponse(request("trigger:continuation-expired")))
-                .expectNextMatches(e -> e instanceof MlAgentStreamEvent.Started)
-                .expectError(MlAgentContinuationExpiredException.class)
                 .verify(Duration.ofSeconds(2));
     }
 
@@ -112,30 +93,5 @@ class MockMlAgentClientTest {
                 .expectNextMatches(e -> e instanceof MlAgentStreamEvent.Token)
                 .thenCancel()
                 .verify(Duration.ofSeconds(2));
-    }
-
-    @Test
-    void noConversationIdOrContinuationInRequest_getsAFabricatedPairOnDone() {
-        MlAgentStreamEvent.Done done = (MlAgentStreamEvent.Done) client
-                .streamResponse(request("trigger:empty", null, null))
-                .blockLast(Duration.ofSeconds(2));
-
-        assertThat(done).isNotNull();
-        assertThat(done.conversationId()).isNotBlank();
-        assertThat(done.continuation()).isNotBlank();
-    }
-
-    @Test
-    void conversationIdAndContinuationInRequest_areEchoedBackUnchangedOnDone() {
-        String conversationId = "conversation-" + UUID.randomUUID();
-        String continuation = "v1.mock." + UUID.randomUUID();
-
-        MlAgentStreamEvent.Done done = (MlAgentStreamEvent.Done) client
-                .streamResponse(request("trigger:empty", conversationId, continuation))
-                .blockLast(Duration.ofSeconds(2));
-
-        assertThat(done).isNotNull();
-        assertThat(done.conversationId()).isEqualTo(conversationId);
-        assertThat(done.continuation()).isEqualTo(continuation);
     }
 }
