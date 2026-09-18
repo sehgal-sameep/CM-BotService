@@ -13,9 +13,9 @@ import org.springframework.web.method.HandlerMethod;
 
 /**
  * API metadata plus a global {@link OperationCustomizer} that documents the
- * cross-cutting headers ({@code X-Correlation-Id}, {@code X-User-Id}) on every
- * operation, rather than repeating {@code @Parameter} annotations on each controller
- * method.
+ * cross-cutting headers ({@code X-Correlation-Id}, {@code X-User-Id}, {@code
+ * X-Tenant-Id}, {@code X-Org-Id}) on every operation, rather than repeating
+ * {@code @Parameter} annotations on each controller method.
  */
 @Configuration
 public class OpenApiConfig {
@@ -58,6 +58,21 @@ public class OpenApiConfig {
                         + "authentication principal (JWT/session) until the platform's auth "
                         + "mechanism is wired in.")
                 .example("analyst-1"));
+        operation.addParametersItem(new Parameter()
+                .in("header")
+                .name(RequestHeaders.TENANT_ID)
+                .required(true)
+                .description("Tenant identifier. Required on every request — a blank or missing "
+                        + "value is rejected with a 400 validation error.")
+                .example("tenant-123"));
+        operation.addParametersItem(new Parameter()
+                .in("header")
+                .name(RequestHeaders.ORGANIZATION_ID)
+                .required(true)
+                .description("Organization identifier, forwarded to the ML Agent's request "
+                        + "context. Required on every request — a blank or missing value is "
+                        + "rejected with a 400 validation error.")
+                .example("org-123"));
         return operation;
     }
 }
