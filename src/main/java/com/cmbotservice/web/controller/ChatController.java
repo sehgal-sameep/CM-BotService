@@ -62,7 +62,17 @@ public class ChatController {
 
                     SSE event contract (in order):
                     - `stream-start` — { messageId, timestamp }
-                    - `message` (zero or more) — { messageId, sequence, content, timestamp }
+                    - any mix of, zero or more times, in the order the ML Agent produced them:
+                      - `message` — { messageId, sequence, content, timestamp }
+                      - `tool-call` — { messageId, toolCallId, name, argsJson, timestamp } — the ML \
+                    Agent invoked a tool while producing its answer; `argsJson` is the tool's \
+                    arguments serialized as a JSON string. `toolCallId` matches the `tool-result` \
+                    for the same invocation.
+                      - `tool-result` — { messageId, toolCallId, status, ms, rowCount, timestamp } — \
+                    the outcome of a tool invocation. `status` is `OK` or `FAILED` (any value the ML \
+                    Agent doesn't recognize is also reported as `FAILED`). `ms` is the tool's \
+                    execution duration. `rowCount` is the number of rows/items the tool returned, \
+                    present only when `status` is `OK` and the ML Agent reported one, `null` otherwise.
                     - `payload` (at most one) — { messageId, payload: { keySignals, citations }, timestamp }
                     - exactly one of:
                       - `stream-complete` — { messageId, totalChunks, truncated, timestamp }

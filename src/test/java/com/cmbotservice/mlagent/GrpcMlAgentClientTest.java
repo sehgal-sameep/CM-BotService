@@ -87,12 +87,14 @@ class GrpcMlAgentClientTest {
             .build();
 
     @Test
-    void successfulStream_isParsedIntoDomainEvents_andToolAndPingEventsAreConsumedSilently() throws IOException {
+    void successfulStream_isParsedIntoDomainEvents_toolCallAndResultAreForwarded_andPingIsConsumedSilently()
+            throws IOException {
         GrpcMlAgentClient client = startClientWith(observer -> {
             observer.onNext(AnswerEvent.newBuilder().setChunk(Chunk.newBuilder().setDelta("Hello")).build());
             observer.onNext(AnswerEvent.newBuilder().setChunk(Chunk.newBuilder().setDelta(" world")).build());
             observer.onNext(AnswerEvent.newBuilder()
-                    .setToolCall(ToolCall.newBuilder().setToolCallId("t1").setName("lookup")).build());
+                    .setToolCall(ToolCall.newBuilder().setToolCallId("t1").setName("lookup")
+                            .setArgsJson("{\"caseId\":\"case-1\"}")).build());
             observer.onNext(AnswerEvent.newBuilder()
                     .setToolResult(ToolResult.newBuilder().setToolCallId("t1").setMs(12).setRowCount(3)
                             .setStatus(ToolResult.Status.STATUS_OK)).build());
@@ -111,11 +113,54 @@ class GrpcMlAgentClientTest {
                         && t.sequence() == 1 && t.delta().equals("Hello"))
                 .expectNextMatches(e -> e instanceof MlAgentStreamEvent.Token t
                         && t.sequence() == 2 && t.delta().equals(" world"))
+                .expectNextMatches(e -> e instanceof MlAgentStreamEvent.ToolCall tc
+                        && tc.toolCallId().equals("t1") && tc.name().equals("lookup")
+                        && tc.argsJson().equals("{\"caseId\":\"case-1\"}"))
+                .expectNextMatches(e -> e instanceof MlAgentStreamEvent.ToolResult tr
+                        && tr.toolCallId().equals("t1") && tr.status() == MlAgentStreamEvent.ToolResult.Status.OK
+                        && tr.ms() == 12 && tr.rowCount() == 3)
+                // ping is consumed silently: no domain event for it between tool_result and payload.
                 .expectNextMatches(e -> e instanceof MlAgentStreamEvent.Payload p
                         && p.payload().keySignals().get(0).signal().equals("s")
                         && p.payload().citations().get(0).id().equals("c1"))
                 .expectNextMatches(e -> e instanceof MlAgentStreamEvent.Done d
                         && !d.truncated() && d.latencyMs() == 100 && d.tokensIn() == 5 && d.tokensOut() == 10)
+                .verifyComplete();
+    }
+
+    @Test
+    void toolResult_withoutRowCount_isMappedToNullRowCount() throws IOException {
+        GrpcMlAgentClient client = startClientWith(observer -> {
+            observer.onNext(AnswerEvent.newBuilder()
+                    .setToolResult(ToolResult.newBuilder().setToolCallId("t1").setMs(5)
+                            .setStatus(ToolResult.Status.STATUS_FAILED)).build());
+            observer.onNext(AnswerEvent.newBuilder().setDone(Done.newBuilder()).build());
+            observer.onCompleted();
+        });
+
+        StepVerifier.create(client.streamResponse(request()))
+                .expectNextMatches(e -> e instanceof MlAgentStreamEvent.Started)
+                .expectNextMatches(e -> e instanceof MlAgentStreamEvent.ToolResult tr
+                        && tr.status() == MlAgentStreamEvent.ToolResult.Status.FAILED && tr.rowCount() == null)
+                .expectNextMatches(e -> e instanceof MlAgentStreamEvent.Done)
+                .verifyComplete();
+    }
+
+    @Test
+    void toolResult_withUnspecifiedStatus_isMappedToFailedPerContract() throws IOException {
+        GrpcMlAgentClient client = startClientWith(observer -> {
+            observer.onNext(AnswerEvent.newBuilder()
+                    .setToolResult(ToolResult.newBuilder().setToolCallId("t1")
+                            .setStatus(ToolResult.Status.STATUS_UNSPECIFIED)).build());
+            observer.onNext(AnswerEvent.newBuilder().setDone(Done.newBuilder()).build());
+            observer.onCompleted();
+        });
+
+        StepVerifier.create(client.streamResponse(request()))
+                .expectNextMatches(e -> e instanceof MlAgentStreamEvent.Started)
+                .expectNextMatches(e -> e instanceof MlAgentStreamEvent.ToolResult tr
+                        && tr.status() == MlAgentStreamEvent.ToolResult.Status.FAILED)
+                .expectNextMatches(e -> e instanceof MlAgentStreamEvent.Done)
                 .verifyComplete();
     }
 

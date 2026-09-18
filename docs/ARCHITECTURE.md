@@ -159,8 +159,8 @@ Seven event types (`AnswerEvent`), an unset or unrecognised `event` oneof arm MU
 | Event | Payload | Cardinality |
 |---|---|---|
 | `chunk` | `{ delta }` | many — streaming answer text |
-| `tool_call` | `{ tool_call_id, name, args_json }` | 0..n — "rendered in the sandbox trace, logged in product" |
-| `tool_result` | `{ tool_call_id, status, ms, row_count? }` | one per `tool_call` |
+| `tool_call` | `{ tool_call_id, name, args_json }` | 0..n — forwarded to the frontend as `tool-call` (§5 outbound contract below) |
+| `tool_result` | `{ tool_call_id, status, ms, row_count? }` | one per `tool_call` — forwarded as `tool-result` |
 | `payload` | structured Case Manager analysis (below), wrapped in a module-union `AnswerPayload` oneof | at most one, before `done` |
 | `done` | `{ stop_reason, latency_ms, tokens_in, tokens_out }` | one, terminal |
 | `error` | `{ code, retryable }` | terminal |
@@ -279,7 +279,7 @@ the same shape as a normal completion. This is documented explicitly on the
 ## 5. SSE Event Contract
 
 `Content-Type: text/event-stream`. Each event has an `id:` (sequence number, assigned
-uniformly across all five types via one `Flux#index()` over the fully-assembled event
+uniformly across all seven types via one `Flux#index()` over the fully-assembled event
 stream — see [`SseEvents`](../src/main/java/com/cmbotservice/sse/SseEvents.java)),
 `event:` (type), and `data:` (JSON):
 
@@ -287,16 +287,18 @@ stream — see [`SseEvents`](../src/main/java/com/cmbotservice/sse/SseEvents.jav
 |---|---|
 | `stream-start` | `{ messageId, timestamp }` |
 | `message` (0+) | `{ messageId, sequence, content, timestamp }` — the ML Agent's `chunk`/`delta`, translated |
+| `tool-call` (0+, any point in the stream) | `{ messageId, toolCallId, name, argsJson, timestamp }` — the ML Agent's `tool_call`, translated directly |
+| `tool-result` (0+, one per `tool-call`) | `{ messageId, toolCallId, status, ms, rowCount, timestamp }` — the ML Agent's `tool_result`, translated; `status` is `OK`/`FAILED` (unrecognised values fold to `FAILED`), `rowCount` is `null` unless the agent's `result_summary` oneof carried one |
 | `payload` (at most 1, before `stream-complete`) | `{ messageId, payload, timestamp }` — the ML Agent's structured `payload` event, translated directly (`keySignals`/`citations` only) |
 | `stream-complete` | `{ messageId, totalChunks, truncated, timestamp }` — `truncated` collapses the agent's `stop_reason`; no identifier of any kind is ever revealed |
 | `error` | `{ messageId, errorCode, errorMessage, timestamp }` |
 
-Exactly one of `stream-complete`/`error` terminates every stream. The five payload
+Exactly one of `stream-complete`/`error` terminates every stream. The seven payload
 records implement a sealed
 [`ChatSseEvent`](../src/main/java/com/cmbotservice/sse/ChatSseEvent.java) interface —
 a genuine Java 21 win here: the switch that builds the outbound `ServerSentEvent` is
 compiler-checked exhaustive, with no `default` branch to silently swallow a future
-sixth variant. `errorCode` is one of `ML_AGENT_TIMEOUT`, `ML_AGENT_UNAVAILABLE`,
+eighth variant. `errorCode` is one of `ML_AGENT_TIMEOUT`, `ML_AGENT_UNAVAILABLE`,
 `ML_AGENT_ERROR`, `ML_AGENT_REFUSED` (the agent's `ERROR_CODE_MODEL_REFUSED` — it
 understood the request and declined it), `CONCURRENCY_LIMIT_REACHED` (bulkhead full
 *or* circuit open — both reject near-instantly and mean the same thing to a client:
@@ -306,12 +308,12 @@ string, chosen by this backend — never an exception message, stack trace, gRPC
 hostname detail, or (since the finalized contract's `Error` carries no message field
 at all) anything forwarded verbatim from the agent.
 
-The ML Agent's own `tool_call`/`tool_result`/`ping` events are consumed and logged
-(DEBUG/TRACE) by `GrpcMlAgentClient`/`MockMlAgentClient` directly and **never** become
-a domain event or reach this outbound contract at all — `tool_call`/`tool_result` per
-the real contract's own note that they're "rendered in the sandbox trace, logged in
-product," and this service is the product, not the sandbox; `ping` because it's a
-pure transport keepalive with no content to relay.
+The ML Agent's own `tool_call`/`tool_result` events are now forwarded as the
+`tool-call`/`tool-result` domain events/SSE events above (also logged at DEBUG by
+`GrpcMlAgentClient`) — case managers can see what the agent did to produce an answer,
+rather than that trace being dropped. `ping` remains consumed and logged (TRACE) by
+`GrpcMlAgentClient`/`MockMlAgentClient` directly and **never** becomes a domain event —
+it's a pure transport keepalive with no content to relay.
 
 ## 6. `MlAgentClient` — the reactive contract
 
@@ -322,14 +324,15 @@ public interface MlAgentClient {
 ```
 
 `MlAgentStreamEvent` is a **sealed interface** — `Started()` (no fields; the agent
-reveals nothing at start), `Token(delta, sequence)`, `Payload(CaseSummaryPayload)`,
+reveals nothing at start), `Token(delta, sequence)`, `ToolCall(toolCallId, name,
+argsJson)`, `ToolResult(toolCallId, status, ms, rowCount)`, `Payload(CaseSummaryPayload)`,
 `Done(latencyMs, tokensIn, tokensOut, truncated)`. Errors are deliberately **not** a
 variant here — they flow through the `Flux`'s native error channel, which is what
 lets `.timeout()`, `.retryWhen()`, and the resilience4j operators compose
 declaratively in `ChatOrchestrationService` instead of a hand-rolled state machine
-(the old callback-interface design this replaced needed exactly that). `tool_call`/
-`tool_result`/`ping` are consumed and logged directly by each `MlAgentClient`
-implementation and never become a fifth variant at all (§5).
+(the old callback-interface design this replaced needed exactly that). `ping` is
+consumed and logged directly by each `MlAgentClient` implementation and never becomes
+a variant at all (§5).
 
 **`MockMlAgentClient`** — no threads, no polling loops, nothing that could leak:
 `Flux.concat(Mono.just(Started), tokens.delayElements(delay).index(...), Mono.just(Payload(...)), Mono.just(Done(...)))`
@@ -862,8 +865,8 @@ server (the gRPC analog of MockWebServer), a mocked Redis template
 including a dedicated `ChatControllerAuthenticationTest` for `mode: BFF_SESSION`
 alongside the default-mode `ChatControllerTest`) green, including the ML Agent
 contract's request field mapping over gRPC (`history` translated into the `user`/
-`agent` oneof), all seven event types (`tool_call`/`tool_result`/`ping` consumed
-silently), the `payload` citation invariant, an unset-`oneof` event silently ignored
+`agent` oneof), all seven event types (`tool_call`/`tool_result` forwarded as domain
+events, `ping` consumed silently), the `payload` citation invariant, an unset-`oneof` event silently ignored
 per the finalized contract (rather than malformed), gRPC `Status.Code` → exception
 mapping, in-stream `error`/`retryable` mapping (including the new `ML_AGENT_REFUSED`
 code), and `history` forwarded untouched (defaulting to an empty list, never `null`,

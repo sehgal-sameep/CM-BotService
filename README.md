@@ -237,15 +237,18 @@ not-fully-specified design.
 |---|---|---|
 | `stream-start` | `{ messageId, timestamp }` | one, first |
 | `message` | `{ messageId, sequence, content, timestamp }` | many — one streamed answer fragment (the ML Agent's own `chunk`/`delta`) |
+| `tool-call` | `{ messageId, toolCallId, name, argsJson, timestamp }` | zero or more, any point in the stream — the ML Agent invoked a tool (its own `tool_call`); `toolCallId` matches the corresponding `tool-result` |
+| `tool-result` | `{ messageId, toolCallId, status, ms, rowCount, timestamp }` | zero or more, any point in the stream — the outcome of a tool invocation (its own `tool_result`); `status` is `OK`/`FAILED` (unrecognised values fold to `FAILED`), `rowCount` is `null` unless `status` is `OK` and the ML Agent reported one |
 | `payload` | `{ messageId, payload, timestamp }` | at most one, always before `stream-complete` — the structured, cited case analysis (`keySignals`, `citations` only — see `CaseSummaryPayload`) |
 | `stream-complete` | `{ messageId, totalChunks, truncated, timestamp }` | one, terminal — `truncated` is true only if the agent cut generation short (its `stop_reason`); there is no conversation/continuation identifier to hand back, ever — `history` is the sole resumption mechanism |
 | `error` | `{ messageId, errorCode, errorMessage, timestamp }` | terminal |
 
-The ML Agent's own `tool_call`/`tool_result`/`ping` events (its internal
-tool-orchestration trace and transport keepalive) are consumed and logged (DEBUG/TRACE)
-by `GrpcMlAgentClient`/`MockMlAgentClient` and **never** forwarded as an SSE event —
-this backend is the product, not the sandbox the ML Agent's own docs describe those
-events as being rendered in.
+The ML Agent's own `tool_call`/`tool_result` events are forwarded to the frontend as
+the `tool-call`/`tool-result` SSE events above (also logged at DEBUG by
+`GrpcMlAgentClient`), so case managers can see what the ML Agent did to produce an
+answer. `ping` (a pure transport keepalive with no content) remains consumed and logged
+only (TRACE) by `GrpcMlAgentClient`/`MockMlAgentClient` and is never forwarded as an SSE
+event.
 
 ## Resilience behavior
 
@@ -368,12 +371,13 @@ fails startup, not a request. See `src/main/resources/application.yml`:
 - `GrpcMlAgentClientTest` — in-process gRPC server (the gRPC analog of MockWebServer):
   real request field mapping assertion (matches the ML Agent's proto contract,
   including `history`'s translation into the `user`/`agent` oneof), all seven event
-  types including `tool_call`/`tool_result`/`ping` being consumed silently, the
-  `payload` citation invariant, an unset-oneof event being silently ignored rather than
-  erroring (per the finalized contract), gRPC `Status.Code` → exception mapping, and
-  in-stream `error` event mapping — both the non-retryable path (by `Error.Code`, incl.
-  the new `ML_AGENT_REFUSED`) and the `retryable` boolean driving
-  `MlAgentCommunicationException` — against the new transport.
+  types including `tool_call`/`tool_result` being forwarded as domain events and `ping`
+  being consumed silently, the `payload` citation invariant, an unset-oneof event being
+  silently ignored rather than erroring (per the finalized contract), gRPC
+  `Status.Code` → exception mapping, and in-stream `error` event mapping — both the
+  non-retryable path (by `Error.Code`, incl. the new `ML_AGENT_REFUSED`) and the
+  `retryable` boolean driving `MlAgentCommunicationException` — against the new
+  transport.
 - `ChatControllerTest` — full stack (`RestTestClient` against a real random port):
   SSE ordering (incl. the `payload` event), validation, ML-failure-as-error-event,
   correlation ID echo, a request carrying `history` streaming normally end-to-end, 404.

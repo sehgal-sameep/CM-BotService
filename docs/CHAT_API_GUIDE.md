@@ -135,12 +135,29 @@ types, always in roughly this order:
 | Event | Meaning | How many? |
 |---|---|---|
 | `chunk` | One small piece of the answer text, arriving live as it's generated | Many |
-| `tool_call` | The agent looked something up internally (a DB query, a rules check, etc.) | 0 or more — **this backend swallows these**, they never reach the frontend |
-| `tool_result` | The result of that lookup | One per `tool_call` — also swallowed |
-| `ping` | A pure keepalive, no content | 0 or more — also swallowed, just logged |
+| `tool_call` | The agent looked something up internally (a DB query, a rules check, etc.) | 0 or more — **forwarded to the frontend** as `tool-call` (see §6) |
+| `tool_result` | The result of that lookup | One per `tool_call` — **forwarded to the frontend** as `tool-result` |
+| `ping` | A pure keepalive, no content | 0 or more — swallowed, just logged; never forwarded |
 | `payload` | The final, structured, cited analysis (see below) | At most one, before the stream ends |
 | `done` | "I'm finished" | One, always last on success |
 | `error` | "Something went wrong" | Only appears instead of `done`, never alongside it |
+
+**The `tool_call`/`tool_result` events** — the agent's own trace of tool use, now
+passed through to the frontend so the case manager can see what the agent did to
+produce its answer:
+
+```json
+{ "toolCallId": "t-1", "name": "lookup_case_events", "argsJson": "{\"caseId\":\"case-1001\"}" }
+```
+
+```json
+{ "toolCallId": "t-1", "status": "OK", "ms": 42, "rowCount": 7 }
+```
+
+`status` is `OK` or `FAILED` (any value the ML Agent doesn't recognize is treated as
+`FAILED`, per its own contract). `rowCount` is only present when `status` is `OK` and
+the ML Agent reported one — `null` otherwise. There's no guaranteed 1:1 timing with
+`chunk` events; a `tool_call`/`tool_result` pair can arrive at any point in the stream.
 
 **The `payload` event** is the important one — it's the structured answer for the
 case manager UI to render. This is deliberately small: it's an overlay on top of the
@@ -176,19 +193,23 @@ There is **no** conversation/continuation token anywhere in this contract — re
 ## 6. Step 4 — What this backend streams back to the frontend
 
 This backend re-shapes the ML Agent's events into its own, simpler frontend-facing
-contract — same events, cleaner field names, and the internal `tool_call`/
-`tool_result`/`ping` chatter removed entirely:
+contract — same events, cleaner field names. The internal `ping` keepalive is still
+removed entirely, but `tool_call`/`tool_result` are now forwarded as `tool-call`/
+`tool-result`:
 
 | Event | Payload | Notes |
 |---|---|---|
 | `stream-start` | `{ messageId, timestamp }` | Sent immediately, once the ML Agent accepts the request. |
 | `message` | `{ messageId, sequence, content, timestamp }` | One per `chunk` from the agent. `sequence` is 1, 2, 3... |
+| `tool-call` | `{ messageId, toolCallId, name, argsJson, timestamp }` | One per `tool_call` from the agent. Zero or more, any point in the stream. `toolCallId` matches the corresponding `tool-result`. |
+| `tool-result` | `{ messageId, toolCallId, status, ms, rowCount, timestamp }` | One per `tool_result` from the agent. `status` is `OK`/`FAILED`; `rowCount` is `null` unless `status` is `OK` and the agent reported one. |
 | `payload` | `{ messageId, payload, timestamp }` | The structured analysis from §5, unwrapped and passed straight through. |
 | `stream-complete` | `{ messageId, totalChunks, truncated, timestamp }` | `truncated` is `true` only if the agent cut generation short — the text already streamed is still coherent, just incomplete. |
 | `error` | `{ messageId, errorCode, errorMessage, timestamp }` | Terminates the stream instead of `stream-complete`. |
 
 Exactly one of `stream-complete` or `error` ends every stream — never both, never
-neither.
+neither. `tool-call`/`tool-result` are purely additive trace events; a stream with none
+of them is still perfectly normal (the agent didn't need a tool for that answer).
 
 ## 7. Full example: a two-turn conversation
 
@@ -209,6 +230,12 @@ event:message
 data:{"messageId":"m-1","sequence":1,"content":"This case was...","timestamp":"..."}
 
 ... more "message" events ...
+
+event:tool-call
+data:{"messageId":"m-1","toolCallId":"t-1","name":"lookup_case_events","argsJson":"{\"caseId\":\"case-1001\"}","timestamp":"..."}
+
+event:tool-result
+data:{"messageId":"m-1","toolCallId":"t-1","status":"OK","ms":42,"rowCount":7,"timestamp":"..."}
 
 event:payload
 data:{"messageId":"m-1","payload":{...},"timestamp":"..."}
@@ -285,8 +312,10 @@ caseId            ───▶  caseContext.caseId
 endUserId         ───▶  caseContext.endUserId
 history           ───▶  history (role/content ──▶ user/agent oneof)
 message           ───▶  prompt                     ◀───  chunk.delta         ───▶  message.content
-X-User-Id         ───▶  operatorId                 ◀───  payload             ───▶  payload.payload
-requestId         ───▶  requestContext.agentSessionId  ◀── tool_call/tool_result/ping  (never forwarded — logged only)
-X-Correlation-Id  ───▶  requestContext.requestId    ◀───  done               ───▶  stream-complete (totalChunks, truncated)
+X-User-Id         ───▶  operatorId                 ◀───  tool_call           ───▶  tool-call (toolCallId, name, argsJson)
+requestId         ───▶  requestContext.agentSessionId  ◀── tool_result       ───▶  tool-result (toolCallId, status, ms, rowCount)
+X-Correlation-Id  ───▶  requestContext.requestId    ◀───  ping               (never forwarded — logged only)
+                                                          ◀───  payload             ───▶  payload.payload
+                                                          ◀───  done               ───▶  stream-complete (totalChunks, truncated)
                                                           ◀───  error               ───▶  error.errorCode / errorMessage
 ```

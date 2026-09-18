@@ -18,6 +18,8 @@ public final class SseEvents {
         String eventName = switch (event) {
             case StreamStartEvent ignored -> SseEventType.STREAM_START;
             case MessageChunkEvent ignored -> SseEventType.MESSAGE;
+            case ToolCallEvent ignored -> SseEventType.TOOL_CALL;
+            case ToolResultEvent ignored -> SseEventType.TOOL_RESULT;
             case CaseSummaryEvent ignored -> SseEventType.PAYLOAD;
             case StreamCompleteEvent ignored -> SseEventType.STREAM_COMPLETE;
             case StreamErrorEvent ignored -> SseEventType.ERROR;

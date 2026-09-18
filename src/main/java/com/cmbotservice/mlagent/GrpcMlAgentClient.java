@@ -42,10 +42,10 @@ import java.util.concurrent.atomic.AtomicReference;
  * {@link MlAgentStreamEvent}. Never buffers the response — no
  * {@code collectList()}/{@code .block()}, just a straight {@code Flux}.
  * <p>
- * {@code tool_call}/{@code tool_result} are consumed and logged only, per the real
- * contract's own note that they're "rendered in the sandbox trace, logged in
- * product" — this backend is the product, not the sandbox, so they never become a
- * domain event. {@code ping} is a pure keepalive and is likewise only logged.
+ * {@code tool_call}/{@code tool_result} are forwarded as {@link MlAgentStreamEvent.ToolCall}/
+ * {@link MlAgentStreamEvent.ToolResult} domain events (also logged at debug, same as
+ * every other event type) so the frontend can render the ML Agent's tool-use trace.
+ * {@code ping} is a pure keepalive and remains logged only, never a domain event.
  * <p>
  * grpc-java's generated async stub is callback-based ({@code StreamObserver}), not
  * {@code Flux}-based — {@link #grpcEventFlux} bridges the two manually via
@@ -137,8 +137,8 @@ public class GrpcMlAgentClient implements MlAgentClient {
     private void emit(AnswerEvent event, AtomicInteger lastSequence, SynchronousSink<MlAgentStreamEvent> sink) {
         switch (event.getEventCase()) {
             case CHUNK -> sink.next(toToken(event.getChunk(), lastSequence));
-            case TOOL_CALL -> logToolCall(event.getToolCall());
-            case TOOL_RESULT -> logToolResult(event.getToolResult());
+            case TOOL_CALL -> sink.next(toToolCall(event.getToolCall()));
+            case TOOL_RESULT -> sink.next(toToolResult(event.getToolResult()));
             case PAYLOAD -> sink.next(toPayload(event.getPayload()));
             case DONE -> sink.next(toDone(event.getDone()));
             case ERROR -> sink.error(toErrorException(event.getError()));
@@ -152,6 +152,22 @@ public class GrpcMlAgentClient implements MlAgentClient {
 
     private static MlAgentStreamEvent.Token toToken(Chunk chunk, AtomicInteger lastSequence) {
         return new MlAgentStreamEvent.Token(chunk.getDelta(), lastSequence.incrementAndGet());
+    }
+
+    private static MlAgentStreamEvent.ToolCall toToolCall(ToolCall toolCall) {
+        log.debug("ML Agent tool_call id={} name={}", toolCall.getToolCallId(), toolCall.getName());
+        return new MlAgentStreamEvent.ToolCall(toolCall.getToolCallId(), toolCall.getName(), toolCall.getArgsJson());
+    }
+
+    private static MlAgentStreamEvent.ToolResult toToolResult(ToolResult toolResult) {
+        log.debug("ML Agent tool_result id={} status={} ms={} rowCount={}",
+                toolResult.getToolCallId(), toolResult.getStatus(), toolResult.getMs(),
+                toolResult.hasRowCount() ? toolResult.getRowCount() : "n/a");
+        MlAgentStreamEvent.ToolResult.Status status = toolResult.getStatus() == ToolResult.Status.STATUS_OK
+                ? MlAgentStreamEvent.ToolResult.Status.OK
+                : MlAgentStreamEvent.ToolResult.Status.FAILED;
+        Long rowCount = toolResult.hasRowCount() ? toolResult.getRowCount() : null;
+        return new MlAgentStreamEvent.ToolResult(toolResult.getToolCallId(), status, toolResult.getMs(), rowCount);
     }
 
     private static MlAgentStreamEvent.Payload toPayload(AnswerPayload proto) {
@@ -225,16 +241,6 @@ public class GrpcMlAgentClient implements MlAgentClient {
                     "Malformed request or missing required context");
             default -> new MlAgentCommunicationException("ML Agent returned an unexpected status " + code, ex);
         };
-    }
-
-    private void logToolCall(ToolCall toolCall) {
-        log.debug("ML Agent tool_call id={} name={}", toolCall.getToolCallId(), toolCall.getName());
-    }
-
-    private void logToolResult(ToolResult toolResult) {
-        log.debug("ML Agent tool_result id={} status={} ms={} rowCount={}",
-                toolResult.getToolCallId(), toolResult.getStatus(), toolResult.getMs(),
-                toolResult.hasRowCount() ? toolResult.getRowCount() : "n/a");
     }
 
     private static AskCaseManagerRequest toProtoRequest(MlAgentRequest request) {

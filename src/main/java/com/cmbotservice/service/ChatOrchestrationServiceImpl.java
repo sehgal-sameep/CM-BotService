@@ -22,6 +22,8 @@ import com.cmbotservice.sse.SseEvents;
 import com.cmbotservice.sse.StreamCompleteEvent;
 import com.cmbotservice.sse.StreamErrorEvent;
 import com.cmbotservice.sse.StreamStartEvent;
+import com.cmbotservice.sse.ToolCallEvent;
+import com.cmbotservice.sse.ToolResultEvent;
 import com.cmbotservice.web.dto.ChatRequest;
 import com.cmbotservice.web.dto.HistoryTurn;
 import io.github.resilience4j.bulkhead.Bulkhead;
@@ -266,6 +268,10 @@ public class ChatOrchestrationServiceImpl implements ChatOrchestrationService {
                 chunkCount.incrementAndGet();
                 yield new MessageChunkEvent(messageId, token.sequence(), token.delta(), Instant.now());
             }
+            case MlAgentStreamEvent.ToolCall toolCall -> new ToolCallEvent(
+                    messageId, toolCall.toolCallId(), toolCall.name(), toolCall.argsJson(), Instant.now());
+            case MlAgentStreamEvent.ToolResult toolResult -> new ToolResultEvent(
+                    messageId, toolResult.toolCallId(), toolResult.status(), toolResult.ms(), toolResult.rowCount(), Instant.now());
             case MlAgentStreamEvent.Payload payload -> new CaseSummaryEvent(messageId, payload.payload(), Instant.now());
             case MlAgentStreamEvent.Done done ->
                     new StreamCompleteEvent(messageId, chunkCount.get(), done.truncated(), Instant.now());
