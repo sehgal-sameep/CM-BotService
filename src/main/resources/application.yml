@@ -1,5 +1,5 @@
 server:
-  port: 8080
+  port: ${SERVER_PORT:8080}
   shutdown: graceful
 
 spring:
@@ -59,7 +59,7 @@ management:
           include: readinessState
   tracing:
     sampling:
-      probability: 1.0
+      probability: ${TRACING_SAMPLING_PROBABILITY:1.0}
 
 chatbot:
   security:
@@ -67,7 +67,7 @@ chatbot:
     # NONE = bypass all authentication, permit all requests (local dev only — a loud
     # warning is logged on every startup while this is active). Everything below this
     # line only applies when mode: BFF_SESSION.
-    mode: NONE
+    mode: ${CHATBOT_SECURITY_MODE:NONE}
     session:
       # Cookie carrying the BFF-issued session identifier.
       cookie-name: SESSION
@@ -84,10 +84,12 @@ chatbot:
       # verified format).
       strategy: json-blob
       namespace: "chatbot-session"
-      host: localhost
-      port: 6379
-      ssl: false
-      password: ""
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      ssl: ${REDIS_SSL:false}
+      # No default here is a real credential — empty means "no password" (this
+      # service's own local-dev Redis default), never a placeholder secret value.
+      password: ${REDIS_PASSWORD:""}
       # Field names inside the assumed single JSON document per session. Change these
       # (no code change needed) once the real layout is confirmed.
       field-names:
@@ -105,25 +107,28 @@ chatbot:
       required-permission-prefix: "CHATBOT_"
       permit-when-no-chatbot-permissions: false
     cors:
-      allowed-origins: []
+      # Comma-separated list of allowed origins, e.g. "https://app.example.com,https://other.example.com".
+      # Empty (the safe default) allows none — must be set explicitly per environment.
+      allowed-origins: ${CORS_ALLOWED_ORIGINS:}
     # Insecure escape hatch for local development only: if the shared Redis is
     # unreachable, permit the request through anyway instead of rejecting with 503.
-    # Must never be true in a shared/prod environment.
+    # Must never be true in a shared/prod environment — intentionally NOT
+    # environment-variable-driven so it can't be flipped on in Azure by mistake.
     fail-open-on-redis-error: false
 
 ml-agent:
   # "mock" (default, MockMlAgentClient) or "grpc" (GrpcMlAgentClient, real gRPC calls).
-  mode: mock
+  mode: ${ML_AGENT_MODE:mock}
   # Only used in mode: grpc — still required (non-blank/positive) because these
   # properties are bound and validated at startup regardless of which client bean ends
   # up active.
-  grpc-host: localhost
-  grpc-port: 9090
+  grpc-host: ${ML_AGENT_GRPC_HOST:localhost}
+  grpc-port: ${ML_AGENT_GRPC_PORT:9090}
   # First-response and idle-stream timeouts share one Reactor operator (see
   # ChatOrchestrationService) but are independently configurable. No separate gRPC
   # deadline is configured — this is the one, client-agnostic timeout authority.
-  first-response-timeout: 5s
-  idle-timeout: 15s
+  first-response-timeout: ${ML_AGENT_FIRST_RESPONSE_TIMEOUT:5s}
+  idle-timeout: ${ML_AGENT_IDLE_TIMEOUT:15s}
   grpc-max-inbound-message-size: 1MB
 
 resilience:
@@ -165,4 +170,4 @@ logging:
     # %clr(%-5level) with no color argument uses Boot's built-in per-level coloring: ERROR=red, WARN=yellow, else=green.
     console: "%clr(%d{yyyy-MM-dd HH:mm:ss.SSS}){faint} %clr([%thread]){faint} %clr(%-5level) %clr([corrId=%X{correlationId:-},tenant=%X{tenantId:-},case=%X{caseId:-},trace=%X{traceId:-},span=%X{spanId:-}]){cyan} %clr(%logger{36}){blue} %clr(-){faint} %msg%n%wEx"
   level:
-    com.cmbotservice: DEBUG
+    com.cmbotservice: ${LOG_LEVEL_COM_CMBOTSERVICE:DEBUG}
