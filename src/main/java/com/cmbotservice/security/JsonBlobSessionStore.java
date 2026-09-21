@@ -1,5 +1,6 @@
 package com.cmbotservice.security;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Instant;
@@ -88,7 +89,7 @@ public class JsonBlobSessionStore implements SessionStore {
     JsonNode root;
     try {
       root = objectMapper.readTree(json);
-    } catch (Exception ex) {
+    } catch (JsonProcessingException ex) {
       throw new IllegalStateException("Session record is not valid JSON", ex);
     }
     SecurityProperties.Redis.FieldNames fields = properties.redis().fieldNames();

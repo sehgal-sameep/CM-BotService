@@ -1,10 +1,8 @@
 package com.cmbotservice.context;
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
-import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.server.ServerWebExchange;
 
 /**
@@ -28,8 +26,9 @@ public class HeaderBasedRequestContextResolver implements RequestContextResolver
 
   @Override
   public RequestContext resolve(ServerWebExchange exchange, String caseId) {
-    String tenantId = requireHeader(exchange, RequestHeaders.TENANT_ID);
-    String organization = requireHeader(exchange, RequestHeaders.ORGANIZATION_ID);
+    String tenantId = RequestContextResolver.requireHeader(exchange, RequestHeaders.TENANT_ID);
+    String organization =
+        RequestContextResolver.requireHeader(exchange, RequestHeaders.ORGANIZATION_ID);
     String userId = exchange.getRequest().getHeaders().getFirst(RequestHeaders.USER_ID);
     String correlationId = exchange.getAttribute(CorrelationIdFilter.CORRELATION_ID_ATTRIBUTE);
     return new RequestContext(
@@ -38,14 +37,5 @@ public class HeaderBasedRequestContextResolver implements RequestContextResolver
         organization,
         StringUtils.hasText(userId) ? userId : UNKNOWN_USER,
         correlationId);
-  }
-
-  private static String requireHeader(ServerWebExchange exchange, String headerName) {
-    String value = exchange.getRequest().getHeaders().getFirst(headerName);
-    if (!StringUtils.hasText(value)) {
-      throw new ResponseStatusException(
-          HttpStatus.BAD_REQUEST, headerName + " header must not be blank");
-    }
-    return value;
   }
 }

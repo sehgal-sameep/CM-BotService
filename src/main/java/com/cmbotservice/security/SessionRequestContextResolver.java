@@ -5,10 +5,7 @@ import com.cmbotservice.context.RequestContext;
 import com.cmbotservice.context.RequestContextResolver;
 import com.cmbotservice.context.RequestHeaders;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
-import org.springframework.util.StringUtils;
-import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.server.ServerWebExchange;
 
 /**
@@ -39,17 +36,9 @@ public class SessionRequestContextResolver implements RequestContextResolver {
     // every other path through the filter either populates it or rejects the
     // request outright before this resolver ever runs.
     String userId = session != null ? session.username() : UNKNOWN_USER;
-    String tenantId = requireHeader(exchange, RequestHeaders.TENANT_ID);
-    String organization = requireHeader(exchange, RequestHeaders.ORGANIZATION_ID);
+    String tenantId = RequestContextResolver.requireHeader(exchange, RequestHeaders.TENANT_ID);
+    String organization =
+        RequestContextResolver.requireHeader(exchange, RequestHeaders.ORGANIZATION_ID);
     return new RequestContext(tenantId, caseId, organization, userId, correlationId);
-  }
-
-  private static String requireHeader(ServerWebExchange exchange, String headerName) {
-    String value = exchange.getRequest().getHeaders().getFirst(headerName);
-    if (!StringUtils.hasText(value)) {
-      throw new ResponseStatusException(
-          HttpStatus.BAD_REQUEST, headerName + " header must not be blank");
-    }
-    return value;
   }
 }

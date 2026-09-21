@@ -227,6 +227,7 @@ public class SessionAuthenticationWebFilter implements WebFilter {
     try {
       bytes = objectMapper.writeValueAsBytes(body);
     } catch (JsonProcessingException e) {
+      log.error("Failed to serialize rejection body; falling back to a minimal error body", e);
       bytes = ("{\"errorCode\":\"" + reason.errorCode() + "\"}").getBytes(StandardCharsets.UTF_8);
     }
     DataBuffer buffer = response.bufferFactory().wrap(bytes);

@@ -1,5 +1,8 @@
 package com.cmbotservice.context;
 
+import org.springframework.http.HttpStatus;
+import org.springframework.util.StringUtils;
+import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.server.ServerWebExchange;
 
 /**
@@ -19,4 +22,18 @@ import org.springframework.web.server.ServerWebExchange;
 public interface RequestContextResolver {
 
   RequestContext resolve(ServerWebExchange exchange, String caseId);
+
+  /**
+   * Shared by every implementation to enforce the required-header rule documented above, so the
+   * same 400/{@code ResponseStatusException} behavior for a missing/blank header doesn't have to be
+   * duplicated per implementation.
+   */
+  static String requireHeader(ServerWebExchange exchange, String headerName) {
+    String value = exchange.getRequest().getHeaders().getFirst(headerName);
+    if (!StringUtils.hasText(value)) {
+      throw new ResponseStatusException(
+          HttpStatus.BAD_REQUEST, headerName + " header must not be blank");
+    }
+    return value;
+  }
 }
