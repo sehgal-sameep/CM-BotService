@@ -12,45 +12,44 @@ import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.server.ServerWebExchange;
 
 /**
- * {@code chatbot.security.mode: BFF_SESSION} {@link RequestContextResolver}: derives
- * {@code userId} from the {@link SessionContext} that {@link SessionAuthenticationWebFilter}
- * already validated and stored as an exchange attribute — this is exactly the seam
- * {@link RequestContextResolver}'s own Javadoc anticipated, so {@code ChatController}
- * requires no change at all to pick this up.
- * <p>
- * {@code tenantId}/{@code organization} are read from the {@code X-Tenant-Id}/
- * {@code X-Org-Id} request headers, same as {@link com.cmbotservice.context.HeaderBasedRequestContextResolver}
- * — {@code caseId} is still sourced from the request body, unchanged from today's
- * contract. This is separate from {@link SessionAuthenticationWebFilter}'s own,
- * optional tenant-header cross-check against the session's tenant (enforced upstream,
- * in the filter) — that check only fires when the header is present and is not what
- * makes {@code X-Tenant-Id} required here.
+ * {@code chatbot.security.mode: BFF_SESSION} {@link RequestContextResolver}: derives {@code userId}
+ * from the {@link SessionContext} that {@link SessionAuthenticationWebFilter} already validated and
+ * stored as an exchange attribute — this is exactly the seam {@link RequestContextResolver}'s own
+ * Javadoc anticipated, so {@code ChatController} requires no change at all to pick this up.
+ *
+ * <p>{@code tenantId}/{@code organization} are read from the {@code X-Tenant-Id}/ {@code X-Org-Id}
+ * request headers, same as {@link com.cmbotservice.context.HeaderBasedRequestContextResolver} —
+ * {@code caseId} is still sourced from the request body, unchanged from today's contract. This is
+ * separate from {@link SessionAuthenticationWebFilter}'s own, optional tenant-header cross-check
+ * against the session's tenant (enforced upstream, in the filter) — that check only fires when the
+ * header is present and is not what makes {@code X-Tenant-Id} required here.
  */
 @Component
 @ConditionalOnProperty(prefix = "chatbot.security", name = "mode", havingValue = "BFF_SESSION")
 public class SessionRequestContextResolver implements RequestContextResolver {
 
-    private static final String UNKNOWN_USER = "unknown-user";
+  private static final String UNKNOWN_USER = "unknown-user";
 
-    @Override
-    public RequestContext resolve(ServerWebExchange exchange, String caseId) {
-        SessionContext session = exchange.getAttribute(SessionContext.EXCHANGE_ATTRIBUTE);
-        String correlationId = exchange.getAttribute(CorrelationIdFilter.CORRELATION_ID_ATTRIBUTE);
-        // session is only ever absent here if chatbot.security.fail-open-on-redis-error
-        // let a request through without one (see SessionAuthenticationWebFilter) —
-        // every other path through the filter either populates it or rejects the
-        // request outright before this resolver ever runs.
-        String userId = session != null ? session.username() : UNKNOWN_USER;
-        String tenantId = requireHeader(exchange, RequestHeaders.TENANT_ID);
-        String organization = requireHeader(exchange, RequestHeaders.ORGANIZATION_ID);
-        return new RequestContext(tenantId, caseId, organization, userId, correlationId);
-    }
+  @Override
+  public RequestContext resolve(ServerWebExchange exchange, String caseId) {
+    SessionContext session = exchange.getAttribute(SessionContext.EXCHANGE_ATTRIBUTE);
+    String correlationId = exchange.getAttribute(CorrelationIdFilter.CORRELATION_ID_ATTRIBUTE);
+    // session is only ever absent here if chatbot.security.fail-open-on-redis-error
+    // let a request through without one (see SessionAuthenticationWebFilter) —
+    // every other path through the filter either populates it or rejects the
+    // request outright before this resolver ever runs.
+    String userId = session != null ? session.username() : UNKNOWN_USER;
+    String tenantId = requireHeader(exchange, RequestHeaders.TENANT_ID);
+    String organization = requireHeader(exchange, RequestHeaders.ORGANIZATION_ID);
+    return new RequestContext(tenantId, caseId, organization, userId, correlationId);
+  }
 
-    private static String requireHeader(ServerWebExchange exchange, String headerName) {
-        String value = exchange.getRequest().getHeaders().getFirst(headerName);
-        if (!StringUtils.hasText(value)) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, headerName + " header must not be blank");
-        }
-        return value;
+  private static String requireHeader(ServerWebExchange exchange, String headerName) {
+    String value = exchange.getRequest().getHeaders().getFirst(headerName);
+    if (!StringUtils.hasText(value)) {
+      throw new ResponseStatusException(
+          HttpStatus.BAD_REQUEST, headerName + " header must not be blank");
     }
+    return value;
+  }
 }

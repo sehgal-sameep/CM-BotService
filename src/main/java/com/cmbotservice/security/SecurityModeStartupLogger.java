@@ -7,20 +7,24 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 /**
- * Logs a loud, impossible-to-miss warning on every startup while authentication is
- * bypassed ({@code chatbot.security.mode: NONE}) — exactly as the documented flow
- * requires ("must log a loud warning on startup"). Local development only; never
- * expected to be active in a shared/prod environment.
+ * Logs a loud, impossible-to-miss warning on every startup while authentication is bypassed ({@code
+ * chatbot.security.mode: NONE}) — exactly as the documented flow requires ("must log a loud warning
+ * on startup"). Local development only; never expected to be active in a shared/prod environment.
  */
 @Component
-@ConditionalOnProperty(prefix = "chatbot.security", name = "mode", havingValue = "NONE", matchIfMissing = true)
+@ConditionalOnProperty(
+    prefix = "chatbot.security",
+    name = "mode",
+    havingValue = "NONE",
+    matchIfMissing = true)
 public class SecurityModeStartupLogger {
 
-    private static final Logger log = LoggerFactory.getLogger(SecurityModeStartupLogger.class);
+  private static final Logger log = LoggerFactory.getLogger(SecurityModeStartupLogger.class);
 
-    @PostConstruct
-    void warnAuthenticationBypassed() {
-        log.warn("""
+  @PostConstruct
+  void warnAuthenticationBypassed() {
+    log.warn(
+        """
 
                 ##########################################################################
                 # chatbot.security.mode = NONE                                           #
@@ -29,5 +33,5 @@ public class SecurityModeStartupLogger {
                 # NEVER run with this mode in a shared or production environment.         #
                 ##########################################################################
                 """);
-    }
+  }
 }

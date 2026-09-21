@@ -21,31 +21,37 @@ import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Flux;
 
 /**
- * The one endpoint this stateless orchestrator exposes: forward a chat message to the
- * ML Agent and stream its response back over SSE. There is no conversation resource
- * here to create, fetch, or close — see {@link ChatRequest} and the SSE contract
- * documented on {@link #sendMessage}. Fully non-blocking: the returned {@code Flux} is
- * subscribed and written by Reactor Netty as elements arrive, never buffered.
+ * The one endpoint this stateless orchestrator exposes: forward a chat message to the ML Agent and
+ * stream its response back over SSE. There is no conversation resource here to create, fetch, or
+ * close — see {@link ChatRequest} and the SSE contract documented on {@link #sendMessage}. Fully
+ * non-blocking: the returned {@code Flux} is subscribed and written by Reactor Netty as elements
+ * arrive, never buffered.
  */
 @RestController
-@Tag(name = "Chat", description = "Stateless chat message orchestration — forwards each message to the "
-        + "ML Agent (through a circuit breaker, bulkhead, timeout, and limited retry) and streams its "
-        + "response over SSE. This backend holds no conversation state between requests; conversation "
-        + "memory (if any) is owned by the ML Agent.")
+@Tag(
+    name = "Chat",
+    description =
+        "Stateless chat message orchestration — forwards each message to the "
+            + "ML Agent (through a circuit breaker, bulkhead, timeout, and limited retry) and streams its "
+            + "response over SSE. This backend holds no conversation state between requests; conversation "
+            + "memory (if any) is owned by the ML Agent.")
 public class ChatController {
 
-    private final ChatOrchestrationService chatOrchestrationService;
-    private final RequestContextResolver requestContextResolver;
+  private final ChatOrchestrationService chatOrchestrationService;
+  private final RequestContextResolver requestContextResolver;
 
-    public ChatController(ChatOrchestrationService chatOrchestrationService, RequestContextResolver requestContextResolver) {
-        this.chatOrchestrationService = chatOrchestrationService;
-        this.requestContextResolver = requestContextResolver;
-    }
+  public ChatController(
+      ChatOrchestrationService chatOrchestrationService,
+      RequestContextResolver requestContextResolver) {
+    this.chatOrchestrationService = chatOrchestrationService;
+    this.requestContextResolver = requestContextResolver;
+  }
 
-    @PostMapping(value = ApiPaths.CHAT_MESSAGES, produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    @Operation(
-            summary = "Send a chat message and stream the ML Agent's response over SSE",
-            description = """
+  @PostMapping(value = ApiPaths.CHAT_MESSAGES, produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+  @Operation(
+      summary = "Send a chat message and stream the ML Agent's response over SSE",
+      description =
+          """
                     Stateless pass-through: this endpoint validates the request, forwards it to \
                     the ML Agent (through a circuit breaker, bulkhead, timeout, and limited retry — \
                     see the architecture doc), and streams the response back. It does not store the \
@@ -102,15 +108,19 @@ public class ChatController {
                       -H "X-Org-Id: org-123" \\
                       -d '{"caseId":"case-456","message":"Summarize this case for me"}'
                     ```
-                    """
-    )
-    @ApiResponse(responseCode = "200", description = "SSE stream of chatbot events",
-            content = @Content(mediaType = MediaType.TEXT_EVENT_STREAM_VALUE))
-    @ApiResponse(responseCode = "400", description = "Validation error (e.g. blank/missing X-Tenant-Id, "
-            + "X-Org-Id, caseId, or message)",
-            content = @Content(schema = @Schema(implementation = ErrorResponse.class)))
-    public Flux<ServerSentEvent<Object>> sendMessage(@RequestBody @Valid ChatRequest request, ServerWebExchange exchange) {
-        RequestContext context = requestContextResolver.resolve(exchange, request.caseId());
-        return chatOrchestrationService.streamMessage(context, request);
-    }
+                    """)
+  @ApiResponse(
+      responseCode = "200",
+      description = "SSE stream of chatbot events",
+      content = @Content(mediaType = MediaType.TEXT_EVENT_STREAM_VALUE))
+  @ApiResponse(
+      responseCode = "400",
+      description =
+          "Validation error (e.g. blank/missing X-Tenant-Id, " + "X-Org-Id, caseId, or message)",
+      content = @Content(schema = @Schema(implementation = ErrorResponse.class)))
+  public Flux<ServerSentEvent<Object>> sendMessage(
+      @RequestBody @Valid ChatRequest request, ServerWebExchange exchange) {
+    RequestContext context = requestContextResolver.resolve(exchange, request.caseId());
+    return chatOrchestrationService.streamMessage(context, request);
+  }
 }
