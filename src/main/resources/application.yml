@@ -7,13 +7,16 @@ spring:
     name: cm-bot-service
   autoconfigure:
     exclude:
-      # This service hand-rolls its own single-purpose ReactiveRedisConnectionFactory
-      # (RedisSessionConfig, chatbot.security.redis.*, only created in mode:
-      # BFF_SESSION) rather than relying on Boot's generic spring.data.redis.*
-      # autoconfiguration — excluded to avoid two ReactiveRedisConnectionFactory beans
-      # coexisting for no reason.
+      # The ReactiveRedisConnectionFactory bean RedisSessionConfig depends on actually
+      # comes from DataRedisAutoConfiguration (Lettuce's connection factory implements
+      # both the blocking and reactive interfaces) — DataRedisReactiveAutoConfiguration
+      # is NOT needed for that, it only adds its own ReactiveRedisTemplate/
+      # ReactiveStringRedisTemplate beans on top, which collide with RedisSessionConfig's
+      # own ReactiveStringRedisTemplate bean (an ambiguous-bean startup failure once a
+      # real SessionStore implementation actually autowires one — invisible to this
+      # repo's own tests, which all stub SessionStore out). Excluded to leave exactly
+      # one ReactiveStringRedisTemplate bean.
       - org.springframework.boot.data.redis.autoconfigure.DataRedisReactiveAutoConfiguration
-      - org.springframework.boot.data.redis.autoconfigure.DataRedisAutoConfiguration
       # Boot auto-registers a live Redis ping as part of /actuator/health the moment
       # any ReactiveRedisConnectionFactory bean exists — same principle as the ML
       # Agent circuit breaker being kept out of the readiness group (see below): this
@@ -33,6 +36,22 @@ spring:
     # Bounds the server-side request body buffer (this API's payloads are tiny JSON bodies;
     # generous but not unbounded). The ML-agent WebClient has its own, separately configured limit.
     max-in-memory-size: 256KB
+  data:
+    redis:
+      # The shared Redis instance FMC-PM-BFF also reads/writes BFF sessions in — this
+      # service only ever GETs from it (RedisSessionConfig/JsonBlobSessionStore), never
+      # writes. Local/dev default (localhost:6379, no TLS, no passwordless auth, an
+      # optional plain password) matches a local Redis container; a real environment
+      # sets REDIS_HOST to the Azure Cache for Redis hostname (port 6380, SSL, Entra
+      # ID/managed-identity passwordless auth — no password/connection string here at
+      # all in that case).
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      ssl:
+        enabled: ${REDIS_SSL:false}
+      azure:
+        passwordless-enabled: ${REDIS_AZURE_PASSWORDLESS_ENABLED:false}
 
 springdoc:
   swagger-ui:
@@ -63,49 +82,34 @@ management:
 
 chatbot:
   security:
-    # Master toggle. BFF_SESSION = full validation flow enabled (production).
-    # NONE = bypass all authentication, permit all requests (local dev only — a loud
-    # warning is logged on every startup while this is active). Everything below this
-    # line only applies when mode: BFF_SESSION.
+    # Master toggle. BFF_SESSION = minimal validation flow enabled (production): a
+    # found Redis session is trusted as authenticated, full stop — no fingerprint,
+    # CSRF, permission, or expiry check (see docs/ARCHITECTURE.md §20 for the current,
+    # deliberately reduced scope). NONE = bypass all authentication, permit all
+    # requests (local dev only — a loud warning is logged on every startup while this
+    # is active). Everything below this line only applies when mode: BFF_SESSION.
     mode: ${CHATBOT_SECURITY_MODE:NONE}
     session:
       # Cookie carrying the BFF-issued session identifier.
       cookie-name: SESSION
-      # If the caller sends this header, it must match the tenant bound to the
-      # session record, or the request is rejected with 403. No default is documented
-      # for this header's name in the source design — "X-Tenant-Id" is this service's
-      # own placeholder pick, consistent with its other X-... headers; confirm with
-      # the FMC-PM-BFF team before relying on it.
+      # Header carrying the caller's tenant — part of the Redis key below. Reuses the
+      # same always-required X-Tenant-Id header every request already sends
+      # (RequestHeaders.TENANT_ID), rather than a separate custom header.
       tenant-header-name: X-Tenant-Id
     redis:
-      # Selects the SessionStore bean (see JsonBlobSessionStore's Javadoc for the
-      # important caveat: the real FMC-PM-BFF Redis session layout is not yet
-      # confirmed, so this "json-blob" strategy is a best-effort default, not a
-      # verified format).
+      # Selects the SessionStore bean. "json-blob" is the confirmed FMC-PM-BFF layout:
+      # one JSON document at key "{namespace}:{sessionId}:{tenant}", whose contextJson
+      # field is itself a JSON string carrying username/tenantId.
       strategy: json-blob
-      namespace: "chatbot-session"
-      host: ${REDIS_HOST:localhost}
-      port: ${REDIS_PORT:6379}
-      ssl: ${REDIS_SSL:false}
-      # No default here is a real credential — empty means "no password" (this
-      # service's own local-dev Redis default), never a placeholder secret value.
-      password: ${REDIS_PASSWORD:""}
-      # Field names inside the assumed single JSON document per session. Change these
-      # (no code change needed) once the real layout is confirmed.
+      namespace: "session"
+      # Field names inside the JSON document stored per session (not the nested
+      # contextJson payload, which has a fixed shape). Kept configurable so a naming
+      # change on FMC-PM-BFF's side needs a config change here, not a code change.
       field-names:
-        username: username
-        tenant-id: tenantId
-        permissions: permissions
-        organizations: organizations
-        access-token-expiry: accessTokenExpiry
-        fingerprint: fingerprint
-    csrf:
-      enabled: true
-      cookie-name: XSRF-TOKEN
-      header-name: X-XSRF-TOKEN
-    authorization:
-      required-permission-prefix: "CHATBOT_"
-      permit-when-no-chatbot-permissions: false
+        context-json: context_json
+        access-token: access_token
+        refresh-token: refresh_token
+        fingerprint: fp
     cors:
       # Comma-separated list of allowed origins, e.g. "https://app.example.com,https://other.example.com".
       # Empty (the safe default) allows none — must be set explicitly per environment.

@@ -70,7 +70,7 @@ class ChatOrchestrationServiceTest {
   }
 
   private static RequestContext context() {
-    return new RequestContext("tenant-1", "case-1", "org-1", "analyst-1", "corr-1");
+    return new RequestContext("tenant-1", "case-1", "org-1", "analyst-1", "corr-1", null);
   }
 
   private static ChatRequest chatRequest(String message) {

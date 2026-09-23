@@ -190,13 +190,18 @@ curl -s http://localhost:8080/actuator/health/readiness  # -> still UP
   active, so it's impossible to miss in logs if accidentally left on.
 - **`BFF_SESSION`** (the only mode for any shared/prod deployment) — validates an
   existing BFF-issued session, read-only, against the same Redis instance FMC-PM-BFF
-  uses: extract the session cookie → look up the record (never write/refresh/delete)
-  → check access-token expiry → validate CSRF (cookie vs. header) → cross-check an
-  optional tenant header against the session's tenant → filter the session's
-  permissions to the `CHATBOT_`-prefixed subset and reject if none remain. Every
-  rejection returns the same `ErrorResponse` shape used elsewhere in this API
-  (`401 UNAUTHENTICATED`, `403 FORBIDDEN`, or `503 SESSION_STORE_UNAVAILABLE` if Redis
-  itself is unreachable).
+  uses. **Current scope is deliberately minimal**: `sessionId + tenant → Redis lookup →
+  session found → extract accessToken → authenticated → proceed`. Extract the session
+  cookie and the (mandatory) `X-Tenant-Id` header → look up `session:<sessionId>:<tenant>`
+  (never write/refresh/delete) → a record found at all is trusted as authenticated,
+  full stop. There is currently **no** fingerprint, CSRF, permission, or token-expiry
+  check, even though the source design diagram (`docs/chatbot_auth_redis_lookup.png`)
+  calls for all four — see `docs/ARCHITECTURE.md` §20 if that scope needs to come back.
+  The session's `access_token` is carried onto `RequestContext.accessToken`, ready for
+  a future call to the TFLabs Orchestrator Service (not yet made). Rejection returns
+  the same `ErrorResponse` shape used elsewhere in this API (`401 UNAUTHENTICATED` if
+  no session record exists, `503 SESSION_STORE_UNAVAILABLE` if Redis itself is
+  unreachable).
 
 Only `POST /api/v1/chat/messages` is actually gated — actuator health/readiness,
 Swagger UI, and the OpenAPI JSON stay reachable without a session either way, since
@@ -206,11 +211,10 @@ a k8s liveness/readiness prober has no BFF session cookie to send.
 # mode: NONE (default) — works with no cookie at all
 curl -N -X POST "http://localhost:8080/api/v1/chat/messages" -H "Content-Type: application/json" -H "X-Tenant-Id: t" -H "X-Org-Id: o" -d '{"caseId":"c","message":"hello"}'
 
-# mode: BFF_SESSION — needs a valid session + matching CSRF cookie/header
+# mode: BFF_SESSION — needs only a session record to exist in Redis for this cookie+tenant
 curl -N -X POST "http://localhost:8080/api/v1/chat/messages" \
   -H "Content-Type: application/json" \
-  -H "Cookie: SESSION=<value>; XSRF-TOKEN=<csrf-value>" \
-  -H "X-XSRF-TOKEN: <csrf-value>" \
+  -H "Cookie: SESSION=<value>" \
   -H "X-Tenant-Id: t" \
   -H "X-Org-Id: o" \
   -d '{"caseId":"c","message":"hello"}'
@@ -220,16 +224,38 @@ curl -N -X POST "http://localhost:8080/api/v1/chat/messages" \
 |---|---|
 | `chatbot.security.mode` | `NONE` (default) or `BFF_SESSION` — the master toggle |
 | `chatbot.security.session.cookie-name` | The BFF session cookie's name (default `SESSION`) |
-| `chatbot.security.session.tenant-header-name` | Header name for the *optional* BFF-session tenant cross-check (mismatch → `403 FORBIDDEN`) — **no default is documented in the source design; `X-Tenant-Id` is this service's own placeholder, unconfirmed.** Distinct from (though same literal name as) the always-required `X-Tenant-Id` header every request must send — see "The one endpoint" above; that one is the actual source of `RequestContext.tenantId`, not this cross-check. |
-| `chatbot.security.redis.*` | Host/port/ssl/password/namespace for the shared, read-only Redis connection, plus `strategy` (selects the `SessionStore` bean) and `field-names.*` (maps the assumed session JSON's field names — see "Known limitations") |
-| `chatbot.security.csrf.*` | `enabled`, `cookie-name` (default `XSRF-TOKEN`), `header-name` (default `X-XSRF-TOKEN`) |
-| `chatbot.security.authorization.*` | `required-permission-prefix` (default `CHATBOT_`), `permit-when-no-chatbot-permissions` (default `false`) |
+| `chatbot.security.session.tenant-header-name` | Header carrying the tenant for the Redis lookup (default `X-Tenant-Id`, reusing the same always-required header — kept as its own property in case of future divergence) |
+| `chatbot.security.redis.namespace` / `.strategy` / `.field-names.*` | Key prefix (default `session`, giving `session:<sessionId>:<tenant>`), the `SessionStore` bean to select, and the session envelope's field names (`context-json`/`access-token`/`refresh-token`/`fingerprint`, default `context_json`/`access_token`/`refresh_token`/`fp`) |
+| `spring.data.redis.host` / `.port` / `.ssl.enabled` / `.password` | The shared Redis connection itself (Boot-managed, not `chatbot.security.*`) — local default `localhost:6379`, no TLS |
+| `spring.data.redis.azure.passwordless-enabled` | `true` in a shared/prod environment: authenticates to Azure Cache for Redis via Entra ID/managed identity instead of a password (`spring-cloud-azure-starter-data-redis-lettuce`) |
 | `chatbot.security.cors.allowed-origins` | Explicit FMC UI origins allowed with credentials — no wildcard, ever |
 | `chatbot.security.fail-open-on-redis-error` | Insecure local-dev-only escape hatch (default `false`): permit the request through, unauthenticated, if Redis is unreachable instead of rejecting with 503 |
 
 See `docs/ARCHITECTURE.md`'s Authentication section for the full flow rationale and
 every judgment call this implementation made against an intentionally
 not-fully-specified design.
+
+### Temporary debug endpoint: verifying the Redis lookup directly
+
+`GET /api/v1/debug/session-lookup` (`SessionDebugController`, only registered in
+`mode: BFF_SESSION`) reuses the exact same `SessionStore.findSession(...)` call the
+real auth flow uses, and returns the raw session record instead of gating a chat
+request — a quick way to confirm the Redis lookup itself works, from Swagger UI, with
+no chat payload involved. **Not part of this service's stable API** — it's a
+verification tool for the current minimal flow, meant to be removed once no longer
+needed.
+
+In Swagger UI: open the endpoint under the "Debug (temporary)" tag, "Try it out",
+paste the session cookie's raw value into the `SESSION` cookie field and the tenant
+into the `X-Tenant-Id` header field, then Execute.
+
+```bash
+curl "http://localhost:8080/api/v1/debug/session-lookup" -H "Cookie: SESSION=<value>" -H "X-Tenant-Id: t"
+```
+
+Returns `200` with `{ username, tenantId, accessToken, refreshToken, contextJson,
+fingerprint }` (every field exactly as stored, unvalidated) if a record exists, `401
+UNAUTHENTICATED` if not, `503 SESSION_STORE_UNAVAILABLE` if Redis is unreachable.
 
 ## SSE event contract (FE ↔ BE)
 
@@ -397,8 +423,16 @@ docker run -p 8080:8080 cm-bot-service
 # no image rebuild needed, e.g. to point at a real ML Agent and enable BFF auth:
 docker run -p 8080:8080 \
   -e ML_AGENT_MODE=grpc -e ML_AGENT_GRPC_HOST=ml-agent -e ML_AGENT_GRPC_PORT=9090 \
-  -e CHATBOT_SECURITY_MODE=BFF_SESSION -e CHATBOT_SECURITY_REDIS_HOST=redis \
+  -e CHATBOT_SECURITY_MODE=BFF_SESSION -e REDIS_HOST=redis \
   -e JAVA_OPTS="-Xmx512m -Xms256m" \
+  cm-bot-service
+
+# ...or, against a real Azure Cache for Redis with Entra ID/managed-identity auth
+# (no password/connection string anywhere in this config):
+docker run -p 8080:8080 \
+  -e CHATBOT_SECURITY_MODE=BFF_SESSION \
+  -e REDIS_HOST=redis-fmc-prod.redis.cache.windows.net -e REDIS_PORT=6380 \
+  -e REDIS_SSL=true -e REDIS_AZURE_PASSWORDLESS_ENABLED=true \
   cm-bot-service
 ```
 
@@ -448,28 +482,26 @@ layer.
 - **`AgentRequestContext.organization` now has a source: the required `X-Org-Id`
   request header**, read by `RequestContextResolver` into `RequestContext.organization`
   and forwarded to the ML Agent as-is — this backend does not look it up, validate it
-  against `SessionContext.organizations` (a list, in `BFF_SESSION` mode), or otherwise
+  against the session's org lists (`context_json.mappedOrgs`/`grantedOrgs`, in `BFF_SESSION`
+  mode — not consumed here at all, since nothing downstream needs them), or otherwise
   interpret it.
 - **`operatorId` is sourced from the existing analyst identity** (`RequestContext
   .userId()` — the `X-User-Id` header in `mode: NONE`, or the BFF session username in
   `mode: BFF_SESSION`), the same value this backend already had available; nothing new
   had to be added upstream for this field.
-- **The Redis session layout `JsonBlobSessionStore` assumes is unconfirmed.** The
-  documented flow explicitly states the FMC-PM-BFF key format/serialization needs
-  confirming and to implement behind a swappable strategy in the meantime — that's
-  exactly what `SessionStore`/`chatbot.security.redis.strategy` is. The current
-  default assumes one JSON document per session at a plain string key; if the real
-  layout is structurally different (e.g. Spring Session's per-attribute hash scheme),
-  a new `SessionStore` implementation is needed, not a config change.
-- `chatbot.security.session.tenant-header-name` has no documented default in the
-  source design (unlike the cookie/CSRF property names, which do) — `X-Tenant-Id` is
-  this service's own placeholder pick, unconfirmed.
-- The documented flow describes "endpoint-level access enforced by required
-  permission (e.g., write vs. read)" as a general mechanism, but names no concrete
-  required permission for this service's one real endpoint. Only the confirmed part
-  is implemented: sessions are filtered to their `CHATBOT_`-prefixed permissions and
-  rejected if none remain. The granted-authority list is exposed on the exchange for
-  a future per-endpoint check, but no such check exists today.
+- **The Redis session layout is now confirmed**, resolving what was previously an
+  unconfirmed assumption: one JSON document per session at key
+  `session:<sessionId>:<tenant>`, shaped as `{context_json, access_token,
+  refresh_token, fp}` — `context_json` is itself a JSON *string* (not a nested object)
+  carrying `username`/`tenantId`. `JsonBlobSessionStore` implements exactly this; a
+  structurally different real layout would still need a new `SessionStore`
+  implementation (behind `chatbot.security.redis.strategy`), not a config change.
+- **Authentication scope was deliberately reduced from the diagrammed flow, by
+  explicit request**: a Redis session found for `sessionId + tenant` is trusted as
+  authenticated outright. The diagram's fingerprint check, separate CSRF-token key
+  (`csrf:<sessionId>:<tenant>`) compared against `X-XSRF-TOKEN`, `CHATBOT_`-permission
+  filter, and JWT `exp` expiry check were all previously implemented and then removed —
+  not unconfirmed or forgotten, a scope decision. See `docs/ARCHITECTURE.md` §20.
 - `trace=`/`span=` currently show blank in every log line despite
   `micrometer-tracing-bridge-otel` being on the classpath and `http.server.requests`
   metrics confirming request observations *are* being created — so a span exists, but

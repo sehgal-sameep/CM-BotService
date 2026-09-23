@@ -7,18 +7,16 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.data.redis.connection.ReactiveRedisConnectionFactory;
-import org.springframework.data.redis.connection.RedisStandaloneConfiguration;
-import org.springframework.data.redis.connection.lettuce.LettuceClientConfiguration;
-import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
-import org.springframework.util.StringUtils;
 
 /**
- * The single shared, read-only Redis connection used to look up BFF sessions ({@link
- * JsonBlobSessionStore} or any other {@link SessionStore} strategy) — built once at startup, never
- * per-request, same principle as this service's other pooled clients ({@code GrpcChannelConfig}).
- * Only created in {@code chatbot.security.mode: BFF_SESSION}; {@code mode: NONE} never opens a
- * Redis connection at all.
+ * The read-only string template used to look up BFF sessions ({@link JsonBlobSessionStore} or any
+ * other {@link SessionStore} strategy). The {@link ReactiveRedisConnectionFactory} itself is
+ * Boot-autoconfigured from {@code spring.data.redis.*} (host/port/ssl), with {@code
+ * spring-cloud-azure-starter-data-redis-lettuce} transparently swapping in Entra
+ * ID/managed-identity token auth whenever {@code spring.data.redis.azure.passwordless-enabled:
+ * true} — this class never touches credentials directly, same as FMC-PM-BFF's own wiring. Only
+ * active in {@code chatbot.security.mode: BFF_SESSION}; {@code mode: NONE} never looks anything up.
  */
 @Configuration
 @ConditionalOnProperty(prefix = "chatbot.security", name = "mode", havingValue = "BFF_SESSION")
@@ -43,28 +41,8 @@ public class RedisSessionConfig {
   }
 
   @Bean
-  public ReactiveRedisConnectionFactory sessionRedisConnectionFactory(
-      SecurityProperties properties) {
-    SecurityProperties.Redis redis = properties.redis();
-
-    RedisStandaloneConfiguration standaloneConfig =
-        new RedisStandaloneConfiguration(redis.host(), redis.port());
-    if (StringUtils.hasText(redis.password())) {
-      standaloneConfig.setPassword(redis.password());
-    }
-
-    LettuceClientConfiguration.LettuceClientConfigurationBuilder clientConfigBuilder =
-        LettuceClientConfiguration.builder();
-    if (redis.ssl()) {
-      clientConfigBuilder.useSsl();
-    }
-
-    return new LettuceConnectionFactory(standaloneConfig, clientConfigBuilder.build());
-  }
-
-  @Bean
   public ReactiveStringRedisTemplate sessionRedisTemplate(
-      ReactiveRedisConnectionFactory sessionRedisConnectionFactory) {
-    return new ReactiveStringRedisTemplate(sessionRedisConnectionFactory);
+      ReactiveRedisConnectionFactory reactiveRedisConnectionFactory) {
+    return new ReactiveStringRedisTemplate(reactiveRedisConnectionFactory);
   }
 }

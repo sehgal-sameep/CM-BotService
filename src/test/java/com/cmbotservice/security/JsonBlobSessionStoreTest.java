@@ -6,7 +6,7 @@ import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.lettuce.core.RedisConnectionException;
-import java.time.Instant;
+import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
@@ -15,10 +15,12 @@ import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
 /**
- * Verifies {@link JsonBlobSessionStore}'s parsing of the assumed session JSON shape against a
- * mocked {@link ReactiveStringRedisTemplate} — no real Redis needed. See the class's own Javadoc
- * for the caveat this default strategy's layout is unconfirmed; these tests document exactly what
- * it currently assumes.
+ * Verifies {@link JsonBlobSessionStore}'s parsing of the confirmed FMC-PM-BFF session envelope
+ * ({@code context_json}/{@code access_token}/{@code refresh_token}/{@code fp}, with {@code
+ * context_json} itself a nested JSON string) against a mocked {@link ReactiveStringRedisTemplate} —
+ * no real Redis needed. This store performs no validation beyond "is there a well-formed record" —
+ * see {@link SessionAuthenticationWebFilterTest} for the (currently minimal) authentication flow
+ * built on top of it.
  */
 @SuppressWarnings("unchecked")
 class JsonBlobSessionStoreTest {
@@ -39,99 +41,112 @@ class JsonBlobSessionStoreTest {
   private static SecurityProperties properties() {
     return new SecurityProperties(
         ChatbotSecurityMode.BFF_SESSION,
-        new SecurityProperties.Session("SESSION", "X-Tenant-Id"),
+        new SecurityProperties.Session("SESSION", "tenant"),
         new SecurityProperties.Redis(
             "json-blob",
-            "ns",
-            "localhost",
-            6379,
-            false,
-            "",
+            "session",
             new SecurityProperties.Redis.FieldNames(
-                "username",
-                "tenantId",
-                "permissions",
-                "organizations",
-                "accessTokenExpiry",
-                "fingerprint")),
-        new SecurityProperties.Csrf(true, "XSRF-TOKEN", "X-XSRF-TOKEN"),
-        new SecurityProperties.Authorization("CHATBOT_", false),
-        new SecurityProperties.Cors(java.util.List.of()),
+                "context_json", "access_token", "refresh_token", "fp")),
+        new SecurityProperties.Cors(List.of()),
         false);
   }
 
-  @Test
-  void sessionFound_parsesAllConfiguredFieldsCorrectly() {
-    String json =
-        """
-                {"username":"alice","tenantId":"tenant-1","permissions":["CHATBOT_CHAT","OTHER"],
-                 "organizations":["org-1","org-2"],"accessTokenExpiry":"2030-01-01T00:00:00Z","fingerprint":"fp-1"}
-                """;
-    when(valueOperations.get("ns:abc123")).thenReturn(Mono.just(json));
+  private static String envelope(
+      String contextJson, String accessToken, String refreshToken, String fp) {
+    return "{\"context_json\":"
+        + quoteAndEscape(contextJson)
+        + ",\"access_token\":\""
+        + accessToken
+        + "\",\"refresh_token\":\""
+        + refreshToken
+        + "\",\"fp\":\""
+        + fp
+        + "\"}";
+  }
 
-    StepVerifier.create(store.findSession("abc123"))
+  private static String quoteAndEscape(String rawJson) {
+    return "\"" + rawJson.replace("\"", "\\\"") + "\"";
+  }
+
+  @Test
+  void sessionFound_parsesEnvelopeAndNestedContextJson() {
+    String contextJson = "{\"username\":\"alice\",\"tenantId\":\"tenant-1\"}";
+    when(valueOperations.get("session:abc123:tenant-1"))
+        .thenReturn(Mono.just(envelope(contextJson, "at-1", "rt-1", "fp-1")));
+
+    StepVerifier.create(store.findSession("abc123", "tenant-1"))
         .expectNextMatches(
             ctx ->
                 ctx.username().equals("alice")
                     && ctx.tenantId().equals("tenant-1")
-                    && ctx.permissions().equals(java.util.List.of("CHATBOT_CHAT", "OTHER"))
-                    && ctx.organizations().equals(java.util.List.of("org-1", "org-2"))
-                    && ctx.accessTokenExpiry().equals(Instant.parse("2030-01-01T00:00:00Z"))
+                    && ctx.accessToken().equals("at-1")
+                    && ctx.refreshToken().equals("rt-1")
+                    && ctx.contextJson().equals(contextJson)
                     && ctx.fingerprint().equals("fp-1"))
         .verifyComplete();
   }
 
   @Test
-  void expiryAsEpochMillisNumber_isAlsoAccepted() {
-    long epochMillis = Instant.parse("2030-01-01T00:00:00Z").toEpochMilli();
-    String json =
-        "{\"username\":\"alice\",\"tenantId\":\"tenant-1\",\"permissions\":[],\"organizations\":[],"
-            + "\"accessTokenExpiry\":"
-            + epochMillis
-            + "}";
-    when(valueOperations.get("ns:abc123")).thenReturn(Mono.just(json));
+  void missingRefreshTokenOrFingerprint_isToleratedAsNull() {
+    String contextJson = "{\"username\":\"alice\",\"tenantId\":\"tenant-1\"}";
+    when(valueOperations.get(anyString()))
+        .thenReturn(
+            Mono.just(
+                "{\"context_json\":"
+                    + quoteAndEscape(contextJson)
+                    + ",\"access_token\":\"at-1\"}"));
 
-    StepVerifier.create(store.findSession("abc123"))
-        .expectNextMatches(ctx -> ctx.accessTokenExpiry().toEpochMilli() == epochMillis)
+    StepVerifier.create(store.findSession("abc123", "tenant-1"))
+        .expectNextMatches(ctx -> ctx.refreshToken() == null && ctx.fingerprint() == null)
         .verifyComplete();
   }
 
   @Test
-  void missingOptionalFields_areToleratedAsNullOrEmpty() {
-    String json =
-        "{\"username\":\"alice\",\"tenantId\":\"tenant-1\",\"accessTokenExpiry\":\"2030-01-01T00:00:00Z\"}";
-    when(valueOperations.get("ns:abc123")).thenReturn(Mono.just(json));
+  void blankContextJson_isTreatedAsNotFound() {
+    when(valueOperations.get(anyString()))
+        .thenReturn(Mono.just("{\"context_json\":\"\",\"access_token\":\"at-1\"}"));
 
-    StepVerifier.create(store.findSession("abc123"))
-        .expectNextMatches(
-            ctx ->
-                ctx.permissions().isEmpty()
-                    && ctx.organizations().isEmpty()
-                    && ctx.fingerprint() == null)
-        .verifyComplete();
+    StepVerifier.create(store.findSession("abc123", "tenant-1")).verifyComplete();
+  }
+
+  @Test
+  void blankAccessToken_isTreatedAsNotFound() {
+    String contextJson = "{\"username\":\"alice\",\"tenantId\":\"tenant-1\"}";
+    when(valueOperations.get(anyString()))
+        .thenReturn(Mono.just(envelope(contextJson, "", "rt-1", "fp-1")));
+
+    StepVerifier.create(store.findSession("abc123", "tenant-1")).verifyComplete();
+  }
+
+  @Test
+  void blankUsernameInContextJson_isTreatedAsNotFound() {
+    String contextJson = "{\"tenantId\":\"tenant-1\"}";
+    when(valueOperations.get(anyString()))
+        .thenReturn(Mono.just(envelope(contextJson, "at-1", "rt-1", "fp-1")));
+
+    StepVerifier.create(store.findSession("abc123", "tenant-1")).verifyComplete();
   }
 
   @Test
   void noRecordAtKey_returnsEmpty() {
     when(valueOperations.get(anyString())).thenReturn(Mono.empty());
 
-    StepVerifier.create(store.findSession("missing")).verifyComplete();
+    StepVerifier.create(store.findSession("missing", "tenant-1")).verifyComplete();
   }
 
   @Test
   void malformedJson_isTreatedAsNotFoundRatherThanPropagatingAnError() {
     when(valueOperations.get(anyString())).thenReturn(Mono.just("this is not json"));
 
-    StepVerifier.create(store.findSession("abc123")).verifyComplete();
+    StepVerifier.create(store.findSession("abc123", "tenant-1")).verifyComplete();
   }
 
   @Test
-  void unparsableExpiry_isTreatedAsNotFoundRatherThanPropagatingAnError() {
-    String json =
-        "{\"username\":\"alice\",\"tenantId\":\"tenant-1\",\"accessTokenExpiry\":\"not-a-date\"}";
-    when(valueOperations.get(anyString())).thenReturn(Mono.just(json));
+  void malformedNestedContextJson_isTreatedAsNotFoundRatherThanPropagatingAnError() {
+    when(valueOperations.get(anyString()))
+        .thenReturn(Mono.just("{\"context_json\":\"not json\",\"access_token\":\"at-1\"}"));
 
-    StepVerifier.create(store.findSession("abc123")).verifyComplete();
+    StepVerifier.create(store.findSession("abc123", "tenant-1")).verifyComplete();
   }
 
   @Test
@@ -139,17 +154,17 @@ class JsonBlobSessionStoreTest {
     when(valueOperations.get(anyString()))
         .thenReturn(Mono.error(new RedisConnectionException("connection refused")));
 
-    StepVerifier.create(store.findSession("abc123"))
+    StepVerifier.create(store.findSession("abc123", "tenant-1"))
         .expectError(RedisConnectionException.class)
         .verify();
   }
 
   @Test
-  void keyIsNamespacePrefixedSessionCookieValue() {
+  void keyIsNamespacePrefixedSessionIdAndTenant() {
     when(valueOperations.get(anyString())).thenReturn(Mono.empty());
 
-    store.findSession("abc123").block();
+    store.findSession("abc123", "tenant-1").block();
 
-    org.mockito.Mockito.verify(valueOperations).get("ns:abc123");
+    org.mockito.Mockito.verify(valueOperations).get("session:abc123:tenant-1");
   }
 }

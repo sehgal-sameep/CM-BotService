@@ -707,8 +707,12 @@ server tests, not just asserted.
   `SessionAuthenticationWebFilter`'s own fixed rejection messages (§20), or the fixed
   `errorMessage` strings in `ChatOrchestrationServiceImpl#toErrorEvent` (in-stream).
 - Correlation IDs are logged; auth-adjacent header/cookie values are not — the
-  authentication flow logs only presence/length of the session cookie, never its
-  value, and never the CSRF token or any access/refresh token (§20).
+  authentication flow logs only presence/length of the session cookie, never its value
+  or the session's `access_token`/`refresh_token` (§20). **Deliberate, temporary
+  exception**: `SessionDebugController` (§20) returns `accessToken`/`refreshToken` in
+  its HTTP response body by design — that's its entire purpose (verifying the Redis
+  lookup) — but still never logs them; remove that endpoint before this service is
+  exposed anywhere those response bodies could be captured/cached.
 - Content-type/body validation is WebFlux's own default behavior (confirmed, not
   re-implemented).
 
@@ -736,8 +740,8 @@ com.cmbotservice
  │               SessionAuthenticationWebFilter, AuthRejectionReason,
  │               SecurityModeStartupLogger, CorsSecurityConfig, RedisSessionConfig
  ├─ web/
- │   ├─ controller/  ChatController
- │   ├─ dto/         ChatRequest, ErrorResponse
+ │   ├─ controller/  ChatController, SessionDebugController (temporary, mode: BFF_SESSION)
+ │   ├─ dto/         ChatRequest, ErrorResponse, SessionDebugResponse
  │   └─ advice/      GlobalExceptionHandler
  ├─ service/    ChatOrchestrationService (interface), ChatOrchestrationServiceImpl,
  │               ChatMetrics
@@ -764,41 +768,63 @@ warned against.
 
 ## 20. Authentication (BFF Session)
 
-Per a documented flow (two source images, not reproduced here) requiring this
-backend to validate an existing BFF-issued session rather than authenticate
-independently — read-only, against the same Redis instance FMC-PM-BFF uses.
-`chatbot.security.mode` (`NONE` | `BFF_SESSION`) is the master toggle; everything
-below only applies in `BFF_SESSION`. See README "Authentication" for the config
-table and a curl example of both modes.
+Per a documented flow (`docs/chatbot_auth_redis_lookup.png`) requiring this backend to
+validate an existing BFF-issued session rather than authenticate independently —
+read-only, against the same Redis instance FMC-PM-BFF uses. `chatbot.security.mode`
+(`NONE` | `BFF_SESSION`) is the master toggle; everything below only applies in
+`BFF_SESSION`. See README "Authentication" for the config table and a curl example of
+both modes.
+
+**Current scope is deliberately minimal, by explicit request, and narrower than the
+diagram**: `sessionId + tenant → Redis lookup → session found → extract accessToken →
+authenticated → proceed`. A record found at `session:<sessionId>:<tenant>` at all is
+trusted as authenticated — there is currently **no** fingerprint, CSRF, permission, or
+token-expiry validation, even though the diagram calls for all four and an earlier
+iteration of this feature implemented them. That richer logic was deliberately removed
+rather than left dormant/half-wired — see the git history for
+`SessionAuthenticationWebFilter`/`JsonBlobSessionStore` if it needs to come back, and
+reintroduce it as a deliberate scope decision rather than guessing at partial
+reinstatement.
 
 **Flow** (`SessionAuthenticationWebFilter`, ordered right after `CorrelationIdFilter`,
 scoped to only `POST /api/v1/chat/messages` — actuator/Swagger stay reachable
 unauthenticated, since a k8s prober has no session cookie):
 
-1. Extract the session cookie (`chatbot.security.session.cookie-name`) → `401` if absent.
-2. Look up the session in Redis via `SessionStore` (read-only) → `401` if not found,
-   `503` (default) or fail-open (`chatbot.security.fail-open-on-redis-error`, local-dev
-   only) if Redis itself is unreachable.
-3. Parse into `SessionContext` (username, tenantId, permissions, organizations,
-   access-token expiry, fingerprint).
-4. Check expiry → `401` if passed. Fail-closed on a missing expiry too — treated as
-   already-expired, not never-expiring, since every field but `fingerprint` is
-   documented as always present.
-5. Validate CSRF (`chatbot.security.csrf.enabled`) — cookie value must equal header
-   value → `403` on any mismatch or absence.
-6. Cross-check an optional tenant header against the session's tenant → `403` on
-   mismatch; skipped entirely if the header isn't sent.
-7. Filter the session's permissions to the `chatbot.security.authorization.required-permission-prefix`
-   subset, expose as granted authorities → `403` if empty, unless
-   `permit-when-no-chatbot-permissions` is set.
-8. CORS restricted to `chatbot.security.cors.allowed-origins` via a standard Spring
+1. Extract the session cookie (`chatbot.security.session.cookie-name`) → `401` if
+   absent. Extract the tenant from the `chatbot.security.session.tenant-header-name`
+   header (default `X-Tenant-Id` — the same always-required header, reused rather than
+   a separate custom one) → `401` if absent — it's part of the Redis key itself.
+2. Look up `session:<sessionId>:<tenant>` in Redis via `SessionStore` (read-only) →
+   `401` if not found, `503` (default) or fail-open
+   (`chatbot.security.fail-open-on-redis-error`, local-dev only) if Redis itself is
+   unreachable. The stored value is `{context_json, access_token, refresh_token, fp}`;
+   `context_json` is itself a JSON *string*, parsed a second time for
+   `username`/`tenantId`. A blank `context_json`/`access_token` or missing `username`
+   is treated the same as "not found" (`JsonBlobSessionStore`) — this is basic parsing
+   correctness, not an authentication check.
+3. **Found at all ⇒ authenticated.** `SessionContext` (username, tenantId,
+   accessToken, refreshToken, contextJson, fingerprint — every envelope field carried
+   through unvalidated) is stored as an exchange attribute; `SessionRequestContextResolver`
+   (the `BFF_SESSION` `RequestContextResolver` implementation) reads it back out to
+   populate `RequestContext.userId`/`RequestContext.accessToken` — `ChatController`
+   needed zero changes, exactly as `RequestContextResolver`'s own Javadoc anticipated
+   (§17). `accessToken` is not yet forwarded anywhere — a future task wires it into the
+   call to the TFLabs Orchestrator Service.
+4. CORS restricted to `chatbot.security.cors.allowed-origins` via a standard Spring
    `CorsWebFilter`/`CorsConfiguration` (not hand-rolled), credentials allowed, no
-   wildcard.
-9. On success: `SessionContext` and the granted-authorities list are stored as
-   exchange attributes; `SessionRequestContextResolver` (the `BFF_SESSION`
-   `RequestContextResolver` implementation) reads `SessionContext` back out to
-   populate `RequestContext.userId` — `ChatController` needed zero changes, exactly
-   as `RequestContextResolver`'s own Javadoc anticipated (§17).
+   wildcard. Unaffected by the scope reduction above — orthogonal concern.
+
+**Temporary verification endpoint**: `GET /api/v1/debug/session-lookup`
+(`SessionDebugController`, `docs/ARCHITECTURE.md` §19's `web/controller/` list) reuses
+the exact same `SessionStore.findSession(...)` call — deliberately, so there is exactly
+one Redis lookup implementation — to let the shared Redis lookup be verified directly
+from Swagger UI (session cookie as a `COOKIE`-in parameter, tenant as a header) without
+exercising the full chat flow. Returns the full raw envelope
+(`accessToken`/`refreshToken`/`contextJson`/`fingerprint`) on success, `401` if no
+record exists, `503` if Redis is unreachable. Only registered in `mode: BFF_SESSION`
+(same `@ConditionalOnProperty` `SessionStore` beans use). **Not part of this service's
+stable API** — it exists only to make the current, minimal Redis-lookup flow easy to
+manually verify, and should be removed once that's no longer needed.
 
 **Why rejections are written directly, not thrown**: a `WebFilter` runs upstream of
 `DispatcherHandler`, so an exception thrown here never reaches
@@ -833,33 +859,40 @@ Jackson), so this was latent and invisible until this feature's constructor
 injection surfaced it. Fixed with an explicit `ObjectMapper` `@Bean`
 (`RedisSessionConfig`), configured to match Spring's own long-standing default
 (ISO-8601 instants) so a filter-written `ErrorResponse` body is indistinguishable
-from one `GlobalExceptionHandler` serializes. Registering a `ReactiveRedisConnectionFactory`
-bean also silently pulled in a live-Redis-ping health contributor
-(`DataRedisReactiveHealthContributorAutoConfiguration`) into `/actuator/health` —
-excluded for the same reason the ML Agent circuit breaker is kept out of the
-readiness group (§14): a downstream dependency's outage has its own explicit
-handling here (fail-open config / a `503` response) and shouldn't also flip this
-service's own health signal.
+from one `GlobalExceptionHandler` serializes.
 
-**The one thing genuinely unconfirmed** (flagged rather than assumed, per the
-source design's own explicit callout to get this from the FMC-PM-BFF team before
-finalizing): the exact Redis session key format and serialization.
-`JsonBlobSessionStore` implements one reasonable default (a single JSON document per
-session at a plain string key, field names fully configurable) behind the
-`SessionStore` interface — selected via `chatbot.security.redis.strategy` — so a
-different real layout needs a new implementation of that interface, not a rewrite of
-the filter. Two smaller unconfirmed points, also flagged rather than guessed:
-`chatbot.security.session.tenant-header-name` has no documented default (unlike the
-cookie/CSRF names) — `X-Tenant-Id` is this service's own placeholder for that
-*optional cross-check* header specifically, distinct from the always-required
-`X-Tenant-Id` header (§4/§10) every request must send regardless of security mode; and
-"endpoint-level access enforced by required permission" is described as a general
-mechanism with no concrete permission named for this service's one real endpoint, so
-only the confirmed part (filter-and-reject-if-empty) is implemented.
+**A second platform quirk, found only once Azure Entra ID passwordless auth was
+wired in**: the Lettuce-based `RedisConnectionFactory` Boot autoconfigures actually
+implements *both* the blocking and reactive connection-factory interfaces — the
+`ReactiveRedisConnectionFactory` bean this feature depends on
+(`RedisSessionConfig#sessionRedisTemplate`) comes from `DataRedisAutoConfiguration`
+(the "blocking" one), not `DataRedisReactiveAutoConfiguration` (which only adds
+`ReactiveRedisTemplate`/`ReactiveStringRedisTemplate` *on top of* an already-existing
+factory bean, via its own `@ConditionalOnBean`). Excluding `DataRedisAutoConfiguration`
+— which an earlier version of this config did, on the assumption "blocking, therefore
+unneeded in a fully-reactive app" — silently left no connection factory bean at all.
+Only `DataRedisReactiveHealthContributorAutoConfiguration`/
+`DataRedisHealthContributorAutoConfiguration` are excluded now, for the same reason
+the ML Agent circuit breaker is kept out of the readiness group (§14): a downstream
+dependency's outage has its own explicit handling here (fail-open config / a `503`
+response) and shouldn't also flip this service's own health signal.
+
+**The Redis session key format and session envelope are now confirmed** (see
+`docs/chatbot_auth_redis_lookup.png`), resolving what an earlier iteration of this
+feature had flagged as genuinely unconfirmed: one JSON document per session at key
+`session:<sessionId>:<tenant>`, `{context_json, access_token, refresh_token, fp}` with
+`context_json` itself a JSON string. `JsonBlobSessionStore` implements exactly this
+behind the `SessionStore` interface (selected via `chatbot.security.redis.strategy`) —
+a structurally different real layout would still need a new implementation of that
+interface, not a rewrite of the filter. The diagram's separate CSRF-token key
+(`csrf:<sessionId>:<tenant>`), fingerprint check, `CHATBOT_`-permission filter, and
+JWT-expiry check are all real, previously-implemented pieces of that richer flow — not
+implemented *today* per the current scope decision (see above), not unconfirmed or
+forgotten.
 
 ## Verified end-to-end
 
-Full test suite (72 tests: unit, `StepVerifier`/virtual-time, an in-process gRPC
+Full test suite (71 tests: unit, `StepVerifier`/virtual-time, an in-process gRPC
 server (the gRPC analog of MockWebServer), a mocked Redis template
 (`JsonBlobSessionStoreTest`), and `RestTestClient` against a real random port —
 including a dedicated `ChatControllerAuthenticationTest` for `mode: BFF_SESSION`

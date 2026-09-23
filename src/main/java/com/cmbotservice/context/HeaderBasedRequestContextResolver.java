@@ -36,6 +36,7 @@ public class HeaderBasedRequestContextResolver implements RequestContextResolver
         caseId,
         organization,
         StringUtils.hasText(userId) ? userId : UNKNOWN_USER,
-        correlationId);
+        correlationId,
+        null);
   }
 }

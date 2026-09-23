@@ -5,8 +5,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.cmbotservice.context.RequestHeaders;
 import com.cmbotservice.security.SessionContext;
 import com.cmbotservice.security.SessionStore;
-import java.time.Instant;
-import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -26,7 +24,8 @@ import reactor.core.publisher.Mono;
  * repo's default {@code mode: NONE}. A stub {@link SessionStore} bean replaces the real
  * Redis-backed one (via {@code chatbot.security.redis.strategy} set to a value {@code
  * JsonBlobSessionStore}'s own condition won't match), so no real Redis is needed to prove the
- * wiring.
+ * wiring. Covers the current, deliberately minimal flow only: a found session authenticates the
+ * request outright, an absent one rejects with 401.
  */
 @SpringBootTest(
     webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
@@ -35,9 +34,6 @@ import reactor.core.publisher.Mono;
 class ChatControllerAuthenticationTest {
 
   private static final String SESSION_COOKIE = "SESSION";
-  private static final String CSRF_COOKIE = "XSRF-TOKEN";
-  private static final String CSRF_HEADER = "X-XSRF-TOKEN";
-  private static final String CSRF_VALUE = "csrf-abc";
 
   @LocalServerPort private int port;
 
@@ -69,35 +65,33 @@ class ChatControllerAuthenticationTest {
   }
 
   @Test
-  void csrfHeaderMismatch_returns403Forbidden() {
-    stubSessionStore.setSession(validSession());
+  void sessionNotFoundInRedis_returns401Unauthenticated() {
+    stubSessionStore.reset(); // no session set
 
     restTestClient
         .post()
         .uri("/api/v1/chat/messages")
-        .header("Cookie", SESSION_COOKIE + "=abc123; " + CSRF_COOKIE + "=" + CSRF_VALUE)
-        .header(CSRF_HEADER, "wrong-value")
+        .header("Cookie", SESSION_COOKIE + "=abc123")
         .header(RequestHeaders.TENANT_ID, "tenant-1")
         .header(RequestHeaders.ORGANIZATION_ID, "org-1")
         .contentType(MediaType.APPLICATION_JSON)
         .body(Map.of("caseId", "case-1", "message", "hello"))
         .exchange()
         .expectStatus()
-        .isForbidden()
+        .isUnauthorized()
         .expectBody()
         .jsonPath("$.errorCode")
-        .isEqualTo("FORBIDDEN");
+        .isEqualTo("UNAUTHENTICATED");
   }
 
   @Test
-  void validSessionAndCsrf_streamsSuccessfully() {
+  void validSession_streamsSuccessfully() {
     stubSessionStore.setSession(validSession());
 
     restTestClient
         .post()
         .uri("/api/v1/chat/messages")
-        .header("Cookie", SESSION_COOKIE + "=abc123; " + CSRF_COOKIE + "=" + CSRF_VALUE)
-        .header(CSRF_HEADER, CSRF_VALUE)
+        .header("Cookie", SESSION_COOKIE + "=abc123")
         .header(RequestHeaders.TENANT_ID, "tenant-1")
         .header(RequestHeaders.ORGANIZATION_ID, "org-1")
         .contentType(MediaType.APPLICATION_JSON)
@@ -112,12 +106,7 @@ class ChatControllerAuthenticationTest {
 
   private static SessionContext validSession() {
     return new SessionContext(
-        "alice",
-        "tenant-1",
-        List.of("CHATBOT_CHAT"),
-        List.of("org-1"),
-        Instant.now().plusSeconds(3600),
-        "fp-1");
+        "alice", "tenant-1", "at-1", "rt-1", "{\"username\":\"alice\"}", "fp-1");
   }
 
   @TestConfiguration
@@ -140,7 +129,7 @@ class ChatControllerAuthenticationTest {
     }
 
     @Override
-    public Mono<SessionContext> findSession(String sessionCookieValue) {
+    public Mono<SessionContext> findSession(String sessionCookieValue, String tenant) {
       return session == null ? Mono.empty() : Mono.just(session);
     }
   }

@@ -4,17 +4,14 @@ import com.cmbotservice.common.ErrorCode;
 import org.springframework.http.HttpStatus;
 
 /**
- * The exact set of rejection reasons the authentication flow documents for logging — used only in
- * log lines, never in a response body (which carries a generic {@link ErrorCode} instead, via
- * {@link #errorCode()}).
+ * The exact set of rejection reasons the (currently minimal) authentication flow can produce — used
+ * only in log lines, never in a response body (which carries a generic {@link ErrorCode} instead,
+ * via {@link #errorCode()}).
  */
 public enum AuthRejectionReason {
   MISSING_SESSION("missing_session", HttpStatus.UNAUTHORIZED, ErrorCode.UNAUTHENTICATED),
+  MISSING_TENANT("missing_tenant", HttpStatus.UNAUTHORIZED, ErrorCode.UNAUTHENTICATED),
   SESSION_NOT_FOUND("session_not_found", HttpStatus.UNAUTHORIZED, ErrorCode.UNAUTHENTICATED),
-  ACCESS_TOKEN_EXPIRED("access_token_expired", HttpStatus.UNAUTHORIZED, ErrorCode.UNAUTHENTICATED),
-  CSRF_VALIDATION_FAILED("csrf_validation_failed", HttpStatus.FORBIDDEN, ErrorCode.FORBIDDEN),
-  TENANT_MISMATCH("tenant_mismatch", HttpStatus.FORBIDDEN, ErrorCode.FORBIDDEN),
-  NO_CHATBOT_PERMISSIONS("no_chatbot_permissions", HttpStatus.FORBIDDEN, ErrorCode.FORBIDDEN),
   SESSION_STORE_UNAVAILABLE(
       "session_store_unavailable",
       HttpStatus.SERVICE_UNAVAILABLE,

@@ -1,6 +1,7 @@
 package com.cmbotservice.config;
 
 import com.cmbotservice.context.RequestHeaders;
+import com.cmbotservice.web.controller.SessionDebugController;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.Operation;
 import io.swagger.v3.oas.models.info.Contact;
@@ -14,7 +15,10 @@ import org.springframework.web.method.HandlerMethod;
 /**
  * API metadata plus a global {@link OperationCustomizer} that documents the cross-cutting headers
  * ({@code X-Correlation-Id}, {@code X-User-Id}, {@code X-Tenant-Id}, {@code X-Org-Id}) on every
- * operation, rather than repeating {@code @Parameter} annotations on each controller method.
+ * business-request operation, rather than repeating {@code @Parameter} annotations on each
+ * controller method. Skipped for {@link SessionDebugController} — that temporary endpoint takes
+ * none of these (only a session cookie + tenant header), and marking {@code X-Tenant-Id}/{@code
+ * X-Org-Id} as required there would be actively misleading since it never reads them.
  */
 @Configuration
 public class OpenApiConfig {
@@ -45,6 +49,9 @@ public class OpenApiConfig {
   }
 
   private Operation addCommonHeaders(Operation operation, HandlerMethod handlerMethod) {
+    if (handlerMethod.getBeanType().equals(SessionDebugController.class)) {
+      return operation;
+    }
     operation.addParametersItem(
         new Parameter()
             .in("header")

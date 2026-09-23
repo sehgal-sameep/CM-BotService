@@ -9,5 +9,13 @@ public final class ApiPaths {
 
   public static final String CHAT_MESSAGES = "/api/v1/chat/messages";
 
+  /**
+   * Temporary verification/debug endpoint for the Redis session lookup used by {@code
+   * chatbot.security.mode: BFF_SESSION} — see {@link
+   * com.cmbotservice.web.controller.SessionDebugController}. Not part of this service's stable API
+   * surface; remove once the real authentication flow no longer needs manual verification.
+   */
+  public static final String DEBUG_SESSION_LOOKUP = "/api/v1/debug/session-lookup";
+
   private ApiPaths() {}
 }

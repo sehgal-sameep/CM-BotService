@@ -62,6 +62,16 @@
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-data-redis-reactive</artifactId>
 		</dependency>
+		<!-- Lets the autoconfigured ReactiveRedisConnectionFactory authenticate to Azure
+		     Cache for Redis via Entra ID/managed identity (spring.data.redis.azure.
+		     passwordless-enabled) instead of a static password — same mechanism
+		     FMC-PM-BFF uses against the same shared cache. No-op locally, where
+		     passwordless-enabled is false and a plain host/port/password is used. -->
+		<dependency>
+			<groupId>com.azure.spring</groupId>
+			<artifactId>spring-cloud-azure-starter-data-redis-lettuce</artifactId>
+			<version>7.4.0</version>
+		</dependency>
 		<dependency>
 			<groupId>org.springdoc</groupId>
 			<artifactId>springdoc-openapi-starter-webflux-ui</artifactId>
