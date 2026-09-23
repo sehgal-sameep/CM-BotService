@@ -359,7 +359,7 @@ calls the ML Agent's `AskCaseManager` server-streaming RPC
 (`src/main/proto/{common,case_manager,chat_agent}.proto`). grpc-java's generated
 async stub is callback-based (`StreamObserver`), not `Flux`-based, so
 `grpcEventFlux` bridges the two manually via `Flux.create` plus grpc-java's own manual
-flow-control API (`ClientCallStreamObserver#disableAutoInboundFlowControl()`/
+flow-control API (`ClientCallStreamObserver#disableAutoRequestWithInitial(0)`/
 `request(n)`) — giving real backpressure without pulling in a third-party
 reactive-grpc codegen plugin. One sharp edge worth documenting explicitly since it
 cost real debugging time: `request()`/`cancel()` **cannot** be called synchronously
@@ -369,6 +369,17 @@ underlying `ClientCall.start()`. The fix is to stash the `ClientCallStreamObserv
 reference in `beforeStart` and only wire `sink.onRequest(...)`/`sink.onCancel(...)` to
 it *after* the `stub.askCaseManager(...)` call returns (which is exactly when
 `start()` has finished) — see `GrpcMlAgentClient#grpcEventFlux`.
+
+A second sharp edge, found in `mode: grpc` against the real agent: the convenience
+`disableAutoInboundFlowControl()` is `disableAutoRequestWithInitial(1)`, so gRPC
+auto-requests one message on top of every `request(n)` forwarded from Reactor. The agent
+can then deliver one event more than downstream demand, which `Flux.create`'s
+`OverflowStrategy.ERROR` rejects with `OverflowException`. That only happens when demand
+is bounded (the SSE writer's is) and the first event arrives after the demand wiring (a
+real network, not the in-process `directExecutor` test server). The fix is an initial
+request of `0`, so gRPC delivers exactly what Reactor asks for. It's pinned by
+`GrpcMlAgentClientTest#boundedDownstreamDemand_...`, which sends from a separate server
+thread specifically to reproduce that timing.
 
 Never buffers the full response (no `collectList()`/`.block()` anywhere — proven by
 the in-process gRPC tests, not just claimed), and emits each `AnswerEvent` it

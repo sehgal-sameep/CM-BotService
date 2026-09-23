@@ -40,7 +40,7 @@ import reactor.core.publisher.FluxSink;
  *
  * <p>grpc-java's generated async stub is callback-based ({@code StreamObserver}), not {@code
  * Flux}-based — {@link #grpcEventFlux} bridges the two manually via {@code Flux.create} plus
- * grpc-java's own manual flow-control API ({@code disableAutoInboundFlowControl}/{@code
+ * grpc-java's own manual flow-control API ({@code disableAutoRequestWithInitial(0)}/{@code
  * request(n)}), giving real backpressure without pulling in a third-party reactive-grpc codegen
  * plugin.
  *
@@ -95,7 +95,15 @@ public class GrpcMlAgentClient implements MlAgentClient {
                   // here would invoke it immediately (Reactor requests unbounded demand as soon
                   // as it's registered), calling request() too early and failing with
                   // "IllegalStateException: Not started".
-                  callStream.disableAutoInboundFlowControl();
+                  //
+                  // Zero initial requests, not disableAutoInboundFlowControl(): that one is
+                  // disableAutoRequestWithInitial(1), i.e. gRPC auto-requests one message
+                  // on top of every request(n) forwarded from Reactor below. The agent can
+                  // then deliver one event more than downstream asked for, which
+                  // OverflowStrategy.ERROR rejects with OverflowException whenever demand
+                  // is bounded (as it is for the SSE writer) and the agent sends a burst.
+                  // With 0, gRPC delivers exactly what Reactor requests.
+                  callStream.disableAutoRequestWithInitial(0);
                   callStreamRef.set(callStream);
                 }
 

@@ -160,6 +160,47 @@ class GrpcMlAgentClientTest {
   }
 
   @Test
+  void boundedDownstreamDemand_isHonouredExactly_evenWhenTheAgentSendsABurst() throws IOException {
+    // Regression: disableAutoInboundFlowControl() is disableAutoRequestWithInitial(1) —
+    // gRPC auto-requests one message on top of the demand we forward from Reactor, so a
+    // burst from the agent arrived with no outstanding demand and Flux.create's
+    // OverflowStrategy.ERROR failed the stream with OverflowException. Unbounded-demand
+    // tests never see it; the real SSE writer requests in small batches.
+    List<AnswerEvent> burst =
+        List.of(
+            AnswerEvent.newBuilder().setChunk(Chunk.newBuilder().setDelta("a")).build(),
+            AnswerEvent.newBuilder().setChunk(Chunk.newBuilder().setDelta("b")).build(),
+            AnswerEvent.newBuilder().setChunk(Chunk.newBuilder().setDelta("c")).build(),
+            AnswerEvent.newBuilder().setDone(Done.newBuilder()).build());
+    // Sent from another thread, after the call has started — like a real agent over the
+    // network. (Sending synchronously inside the handler delivers the first message before
+    // our demand is wired, which happens to mask the extra auto-request.)
+    GrpcMlAgentClient client =
+        startClientWith(
+            observer ->
+                new Thread(
+                        () -> {
+                          try {
+                            Thread.sleep(50);
+                          } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                          }
+                          burst.forEach(observer::onNext);
+                          observer.onCompleted();
+                        })
+                    .start());
+
+    StepVerifier.create(client.streamResponse(request()), 1)
+        .expectNext(burst.get(0))
+        .expectNoEvent(Duration.ofMillis(100)) // nothing more delivered without demand
+        .thenRequest(1)
+        .expectNext(burst.get(1))
+        .thenRequest(2)
+        .expectNext(burst.get(2), burst.get(3))
+        .verifyComplete();
+  }
+
+  @Test
   void toolResult_withUnspecifiedStatusAndNoRowCount_isForwardedUnchanged() throws IOException {
     AnswerEvent toolResult =
         AnswerEvent.newBuilder()
