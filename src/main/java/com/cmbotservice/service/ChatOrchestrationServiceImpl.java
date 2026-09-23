@@ -14,16 +14,9 @@ import com.cmbotservice.context.MdcContext;
 import com.cmbotservice.context.RequestContext;
 import com.cmbotservice.mlagent.MlAgentClient;
 import com.cmbotservice.mlagent.MlAgentRequest;
-import com.cmbotservice.mlagent.MlAgentStreamEvent;
-import com.cmbotservice.sse.CaseSummaryEvent;
-import com.cmbotservice.sse.ChatSseEvent;
-import com.cmbotservice.sse.MessageChunkEvent;
+import com.cmbotservice.mlagent.grpc.v1.AnswerEvent;
+import com.cmbotservice.sse.ServiceErrorEvent;
 import com.cmbotservice.sse.SseEvents;
-import com.cmbotservice.sse.StreamCompleteEvent;
-import com.cmbotservice.sse.StreamErrorEvent;
-import com.cmbotservice.sse.StreamStartEvent;
-import com.cmbotservice.sse.ToolCallEvent;
-import com.cmbotservice.sse.ToolResultEvent;
 import com.cmbotservice.web.dto.ChatRequest;
 import com.cmbotservice.web.dto.HistoryTurn;
 import io.github.resilience4j.bulkhead.Bulkhead;
@@ -38,7 +31,6 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -59,6 +51,12 @@ import reactor.util.retry.Retry;
  * thread, sleeps, or buffers the full response; every layer of protection is a declarative {@code
  * Flux} operator, and cancellation (a client disconnect) tears the whole chain down automatically
  * via Reactor's own propagation.
+ *
+ * <p>A transparent proxy for the response contract: every ML Agent {@link AnswerEvent} is forwarded
+ * to the frontend as-is (event name and payload exactly as the agent sent them — see {@link
+ * SseEvents}), including the agent's own {@code error} event. The only event this service adds is
+ * {@code service_error} ({@link ServiceErrorEvent}), for failures that never produced an agent
+ * event to forward. Everything else here — resilience, logging, metrics — only observes the stream.
  *
  * <p>Stateless by design: nothing here is persisted or held in memory between requests. The real ML
  * Agent has no conversation/continuation identifier at all — resending the full {@code history} on
@@ -113,9 +111,7 @@ public class ChatOrchestrationServiceImpl implements ChatOrchestrationService {
         LogSanitizer.preview(request.message()));
     metrics.connectionOpened();
 
-    AtomicInteger chunkCount = new AtomicInteger(0);
-
-    Flux<MlAgentStreamEvent> mlEvents =
+    Flux<AnswerEvent> mlEvents =
         request.message().length() > chatProperties.maxMessageLength()
             ? Flux.error(
                 new ResponseStatusException(
@@ -126,17 +122,16 @@ public class ChatOrchestrationServiceImpl implements ChatOrchestrationService {
             : callMlAgent(context, request, messageId);
 
     return mlEvents
-        .doOnNext(event -> logIfStreamStarted(messageId, event))
-        .map(event -> toChatSseEvent(event, messageId, chunkCount))
+        .map(SseEvents::fromAnswerEvent)
         .onErrorResume(
             AbortedException.class,
             ex -> {
               log.debug("Client aborted mid-stream for messageId={}", messageId);
               return Flux.empty();
             })
-        .onErrorResume(ex -> Flux.just(toErrorEvent(messageId, ex)))
+        .onErrorResume(ex -> Flux.just(SseEvents.fromServiceError(toServiceError(messageId, ex))))
         .index()
-        .map(indexed -> SseEvents.toServerSentEvent(indexed.getT1(), indexed.getT2()))
+        .map(indexed -> SseEvents.withId(indexed.getT1(), indexed.getT2()))
         .doOnCancel(
             () -> {
               metrics.connectionCancelled();
@@ -150,7 +145,7 @@ public class ChatOrchestrationServiceImpl implements ChatOrchestrationService {
    * re-subscribes this whole chain, so it correctly re-acquires a bulkhead permit and re-checks the
    * breaker on every attempt — a retried call is a fresh attempt, not a continuation.
    */
-  private Flux<MlAgentStreamEvent> callMlAgent(
+  private Flux<AnswerEvent> callMlAgent(
       RequestContext context, ChatRequest request, String messageId) {
     MlAgentRequest mlRequest =
         new MlAgentRequest(
@@ -166,13 +161,28 @@ public class ChatOrchestrationServiceImpl implements ChatOrchestrationService {
             request.message());
 
     AtomicBoolean firstEventSeen = new AtomicBoolean(false);
+    AtomicBoolean agentErrorEventSeen = new AtomicBoolean(false);
     AtomicReference<Throwable> lastError = new AtomicReference<>();
     Instant startedAt = Instant.now();
 
-    Flux<MlAgentStreamEvent> attempt =
+    Flux<AnswerEvent> attempt =
         mlAgentClient
             .streamResponse(mlRequest)
-            .doOnNext(evt -> firstEventSeen.set(true))
+            .doOnNext(
+                evt -> {
+                  if (firstEventSeen.compareAndSet(false, true)) {
+                    metrics.recordFirstResponseLatency(Duration.between(startedAt, Instant.now()));
+                    log.info("ML_STREAM_STARTED messageId={}", messageId);
+                  }
+                  if (evt.getEventCase() == AnswerEvent.EventCase.ERROR) {
+                    agentErrorEventSeen.set(true);
+                    log.warn(
+                        "ML_AGENT_ERROR_EVENT messageId={} code={} retryable={}",
+                        messageId,
+                        evt.getError().getCode(),
+                        evt.getError().getRetryable());
+                  }
+                })
             .transformDeferred(CircuitBreakerOperator.of(circuitBreaker))
             .transformDeferred(BulkheadOperator.of(bulkhead))
             .timeout(
@@ -190,7 +200,17 @@ public class ChatOrchestrationServiceImpl implements ChatOrchestrationService {
         .transform(flux -> withTotalDeadline(flux, chatProperties.maxStreamDuration()))
         .doOnError(lastError::set)
         .doOnError(this::recordFailureMetric)
-        .doOnComplete(metrics::mlRequestSucceeded)
+        .doOnComplete(
+            () -> {
+              // The agent's own error event is forwarded as-is (never converted into an
+              // exception), so a stream that carried one still completes normally — it is
+              // only counted as a failure here, for observability.
+              if (agentErrorEventSeen.get()) {
+                metrics.mlRequestFailed();
+              } else {
+                metrics.mlRequestSucceeded();
+              }
+            })
         .doFinally(
             signalType -> {
               Duration elapsed = Duration.between(startedAt, Instant.now());
@@ -247,8 +267,8 @@ public class ChatOrchestrationServiceImpl implements ChatOrchestrationService {
    * completed normally, so we track whether the source actually reached a terminal signal before
    * that cut, and synthesize a timeout error if it didn't.
    */
-  private static Flux<MlAgentStreamEvent> withTotalDeadline(
-      Flux<MlAgentStreamEvent> source, Duration totalTimeout) {
+  private static Flux<AnswerEvent> withTotalDeadline(
+      Flux<AnswerEvent> source, Duration totalTimeout) {
     AtomicBoolean terminatedNaturally = new AtomicBoolean(false);
     return source
         .doOnComplete(() -> terminatedNaturally.set(true))
@@ -271,12 +291,6 @@ public class ChatOrchestrationServiceImpl implements ChatOrchestrationService {
       metrics.mlRequestRejected();
     } else {
       metrics.mlRequestFailed();
-    }
-  }
-
-  private static void logIfStreamStarted(String messageId, MlAgentStreamEvent event) {
-    if (event instanceof MlAgentStreamEvent.Started) {
-      log.info("ML_STREAM_STARTED messageId={}", messageId);
     }
   }
 
@@ -306,37 +320,11 @@ public class ChatOrchestrationServiceImpl implements ChatOrchestrationService {
     }
   }
 
-  private static ChatSseEvent toChatSseEvent(
-      MlAgentStreamEvent event, String messageId, AtomicInteger chunkCount) {
-    return switch (event) {
-      case MlAgentStreamEvent.Started ignored -> new StreamStartEvent(messageId, Instant.now());
-      case MlAgentStreamEvent.Token token -> {
-        chunkCount.incrementAndGet();
-        yield new MessageChunkEvent(messageId, token.sequence(), token.delta(), Instant.now());
-      }
-      case MlAgentStreamEvent.ToolCall toolCall ->
-          new ToolCallEvent(
-              messageId,
-              toolCall.toolCallId(),
-              toolCall.name(),
-              toolCall.argsJson(),
-              Instant.now());
-      case MlAgentStreamEvent.ToolResult toolResult ->
-          new ToolResultEvent(
-              messageId,
-              toolResult.toolCallId(),
-              toolResult.status(),
-              toolResult.ms(),
-              toolResult.rowCount(),
-              Instant.now());
-      case MlAgentStreamEvent.Payload payload ->
-          new CaseSummaryEvent(messageId, payload.payload(), Instant.now());
-      case MlAgentStreamEvent.Done done ->
-          new StreamCompleteEvent(messageId, chunkCount.get(), done.truncated(), Instant.now());
-    };
-  }
-
-  private static ChatSseEvent toErrorEvent(String messageId, Throwable ex) {
+  /**
+   * Only failures that produced no ML Agent event of their own end up here — transport errors,
+   * timeouts, resilience rejections, validation. The agent's own {@code error} event never does.
+   */
+  private static ServiceErrorEvent toServiceError(String messageId, Throwable ex) {
     ErrorCode code;
     String message;
     if (ex instanceof MlAgentTimeoutException) {
@@ -365,6 +353,6 @@ public class ChatOrchestrationServiceImpl implements ChatOrchestrationService {
       code = ErrorCode.INTERNAL_ERROR;
       message = "An unexpected error occurred.";
     }
-    return new StreamErrorEvent(messageId, code, message, Instant.now());
+    return new ServiceErrorEvent(messageId, code, message, Instant.now());
   }
 }

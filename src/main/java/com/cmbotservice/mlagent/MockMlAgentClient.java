@@ -3,6 +3,14 @@ package com.cmbotservice.mlagent;
 import com.cmbotservice.common.ErrorCode;
 import com.cmbotservice.common.MlAgentCommunicationException;
 import com.cmbotservice.common.MlAgentRejectedException;
+import com.cmbotservice.mlagent.grpc.v1.AnswerEvent;
+import com.cmbotservice.mlagent.grpc.v1.AnswerPayload;
+import com.cmbotservice.mlagent.grpc.v1.CaseManagerAnswerPayload;
+import com.cmbotservice.mlagent.grpc.v1.Chunk;
+import com.cmbotservice.mlagent.grpc.v1.Done;
+import com.cmbotservice.mlagent.grpc.v1.Error;
+import com.cmbotservice.mlagent.grpc.v1.ToolCall;
+import com.cmbotservice.mlagent.grpc.v1.ToolResult;
 import java.time.Duration;
 import java.util.List;
 import java.util.Locale;
@@ -25,9 +33,13 @@ import reactor.core.publisher.Mono;
  * failure mode the real integration must handle is reachable from Swagger/curl with plain text,
  * without polluting the request contract with mock-only fields.
  *
- * <p>Mirrors the real contract's shape: a structured {@link MlAgentStreamEvent.Payload} (with a
- * satisfying citation on every key signal) is always sent before {@link MlAgentStreamEvent.Done},
- * so the SSE path is fully exercisable without a real agent.
+ * <p>Emits the real contract's own {@link AnswerEvent} messages — the exact type {@code
+ * GrpcMlAgentClient} relays — so what the frontend receives in mock mode is byte-for-byte the shape
+ * it will receive from the real agent: a {@code tool_call}/{@code tool_result} trace, {@code chunk}
+ * events, a {@code payload} (with a citation on every key signal), then {@code done}. Transport
+ * failures ({@code trigger:error}/{@code trigger:rejected}) are {@code Flux} errors, exactly as
+ * {@code GrpcMlAgentClient} surfaces a gRPC status; {@code trigger:agent-error} instead emits the
+ * agent's own model-level {@code error} event.
  *
  * <p>Active whenever {@code ml-agent.mode} is {@code mock} (the default).
  */
@@ -85,70 +97,105 @@ public class MockMlAgentClient implements MlAgentClient {
   }
 
   @Override
-  public Flux<MlAgentStreamEvent> streamResponse(MlAgentRequest request) {
+  public Flux<AnswerEvent> streamResponse(MlAgentRequest request) {
     MockScenario scenario = MockScenario.fromPrompt(request.message());
     log.debug("Mock ML Agent selected scenario={} for messageId={}", scenario, request.messageId());
 
     return switch (scenario) {
       case ERROR ->
-          Flux.concat(
-              Mono.just(new MlAgentStreamEvent.Started()),
-              Flux.error(
-                  new MlAgentCommunicationException("Simulated ML Agent failure (trigger:error)")));
+          Flux.error(
+              new MlAgentCommunicationException("Simulated ML Agent failure (trigger:error)"));
       case REJECTED ->
-          Flux.concat(
-              Mono.just(new MlAgentStreamEvent.Started()),
-              Flux.error(
-                  new MlAgentRejectedException(
-                      ErrorCode.NOT_FOUND,
-                      "Simulated rejection: case not found in that tenant (trigger:rejected)")));
-      case EMPTY ->
-          Flux.just(new MlAgentStreamEvent.Started(), new MlAgentStreamEvent.Done(0, 0, 0, false));
-      case TIMEOUT ->
-          Flux.concat(
-              // Deliberately hangs after Started — the orchestrator's own
-              // first-response/idle-timeout operator is what ends this stream;
-              // the mock has no polling loop of its own anymore.
-              Mono.just(new MlAgentStreamEvent.Started()), Mono.never());
-      case SLOW -> streamChunks(selectCannedResponse(request.message()), slowChunkDelay);
-      default -> streamChunks(selectCannedResponse(request.message()), chunkDelay);
+          Flux.error(
+              new MlAgentRejectedException(
+                  ErrorCode.NOT_FOUND,
+                  "Simulated rejection: case not found in that tenant (trigger:rejected)"));
+      case AGENT_ERROR ->
+          Flux.just(
+              AnswerEvent.newBuilder()
+                  .setError(
+                      Error.newBuilder()
+                          .setCode(Error.Code.ERROR_CODE_DATA_UNAVAILABLE)
+                          .setRetryable(true))
+                  .build());
+      case EMPTY -> Flux.just(done(0, 0, 0));
+      // Deliberately never emits — the orchestrator's own first-response/idle-timeout
+      // operator is what ends this stream; the mock has no timer of its own.
+      case TIMEOUT -> Flux.never();
+      case SLOW -> streamChunks(request, selectCannedResponse(request.message()), slowChunkDelay);
+      default -> streamChunks(request, selectCannedResponse(request.message()), chunkDelay);
     };
   }
 
-  private Flux<MlAgentStreamEvent> streamChunks(String text, Duration delay) {
+  private Flux<AnswerEvent> streamChunks(MlAgentRequest request, String text, Duration delay) {
     List<String> sentences = splitIntoSentences(text);
-    Flux<MlAgentStreamEvent> tokens =
+    Flux<AnswerEvent> chunks =
         Flux.fromIterable(sentences)
             .delayElements(delay)
-            .index(
-                (sequence, sentence) ->
-                    new MlAgentStreamEvent.Token(sentence, sequence.intValue() + 1));
+            .map(
+                sentence ->
+                    AnswerEvent.newBuilder()
+                        .setChunk(Chunk.newBuilder().setDelta(sentence))
+                        .build());
     long approxTokensIn = text == null ? 0 : Math.max(1, text.length() / 4);
     long approxTokensOut = sentences.size() * 10L;
     long approxLatencyMs = sentences.size() * delay.toMillis();
     return Flux.concat(
-        Mono.just(new MlAgentStreamEvent.Started()),
-        tokens,
-        Mono.just(new MlAgentStreamEvent.Payload(buildPayload())),
-        Mono.just(
-            new MlAgentStreamEvent.Done(approxLatencyMs, approxTokensIn, approxTokensOut, false)));
+        Flux.fromIterable(toolTrace(request.caseId())),
+        chunks,
+        Mono.just(AnswerEvent.newBuilder().setPayload(buildPayload()).build()),
+        Mono.just(done(approxLatencyMs, approxTokensIn, approxTokensOut)));
   }
 
-  /**
-   * Fabricates a structured payload that satisfies the one invariant {@link
-   * CaseSummaryPayloadValidator} enforces on a real response — every key signal carries a citation
-   * — so the mock exercises the exact same downstream path a real response would.
-   */
-  private static CaseSummaryPayload buildPayload() {
+  private static List<AnswerEvent> toolTrace(String caseId) {
+    String toolCallId = "mock-tool-" + UUID.randomUUID().toString().substring(0, 8);
+    return List.of(
+        AnswerEvent.newBuilder()
+            .setToolCall(
+                ToolCall.newBuilder()
+                    .setToolCallId(toolCallId)
+                    .setName("getCase")
+                    .setArgsJson("{\"caseId\":\"" + caseId + "\"}"))
+            .build(),
+        AnswerEvent.newBuilder()
+            .setToolResult(
+                ToolResult.newBuilder()
+                    .setToolCallId(toolCallId)
+                    .setStatus(ToolResult.Status.STATUS_OK)
+                    .setMs(42)
+                    .setRowCount(1))
+            .build());
+  }
+
+  private static AnswerEvent done(long latencyMs, long tokensIn, long tokensOut) {
+    return AnswerEvent.newBuilder()
+        .setDone(
+            Done.newBuilder()
+                .setStopReason(Done.StopReason.STOP_REASON_COMPLETED)
+                .setLatencyMs(latencyMs)
+                .setTokensIn(tokensIn)
+                .setTokensOut(tokensOut))
+        .build();
+  }
+
+  /** Every key signal carries a citation, as the real contract requires. */
+  private static AnswerPayload buildPayload() {
     String citationId =
         "MOCK-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
-    CaseSummaryPayload.KeySignal signal =
-        new CaseSummaryPayload.KeySignal(
-            "Transaction deviates from the customer's typical behavior profile",
-            List.of(citationId));
-    CaseSummaryPayload.Citation citation =
-        new CaseSummaryPayload.Citation(citationId, "APP_EVENT_LOG", List.of("risk_score"));
-    return new CaseSummaryPayload(List.of(signal), List.of(citation));
+    return AnswerPayload.newBuilder()
+        .setCaseManagerAnswerPayload(
+            CaseManagerAnswerPayload.newBuilder()
+                .addKeySignals(
+                    CaseManagerAnswerPayload.KeySignal.newBuilder()
+                        .setSignal(
+                            "Transaction deviates from the customer's typical behavior profile")
+                        .addCitations(citationId))
+                .addCitations(
+                    CaseManagerAnswerPayload.Citation.newBuilder()
+                        .setId(citationId)
+                        .setSource("getCase")
+                        .addFields("risk_score")))
+        .build();
   }
 
   private static List<String> splitIntoSentences(String text) {

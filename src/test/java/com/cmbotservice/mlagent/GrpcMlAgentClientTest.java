@@ -3,8 +3,6 @@ package com.cmbotservice.mlagent;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.cmbotservice.common.ErrorCode;
-import com.cmbotservice.common.MlAgentCommunicationException;
-import com.cmbotservice.common.MlAgentMalformedResponseException;
 import com.cmbotservice.common.MlAgentRejectedException;
 import com.cmbotservice.common.MlAgentUnavailableException;
 import com.cmbotservice.mlagent.grpc.v1.AnswerEvent;
@@ -16,6 +14,7 @@ import com.cmbotservice.mlagent.grpc.v1.Chunk;
 import com.cmbotservice.mlagent.grpc.v1.ConversationTurn;
 import com.cmbotservice.mlagent.grpc.v1.Done;
 import com.cmbotservice.mlagent.grpc.v1.Error;
+import com.cmbotservice.mlagent.grpc.v1.Ping;
 import com.cmbotservice.mlagent.grpc.v1.ToolCall;
 import com.cmbotservice.mlagent.grpc.v1.ToolResult;
 import io.grpc.ManagedChannel;
@@ -37,9 +36,10 @@ import reactor.test.StepVerifier;
 
 /**
  * Exercises {@link GrpcMlAgentClient} against a real (in-process) gRPC server, proving the {@code
- * Flux} bridging, request field mapping, and response validation actually work end to end — not
- * just that the code compiles. In-process transport is the gRPC analog of what MockWebServer was
- * for the old HTTP integration: a real server/channel pair, just without a real OS socket.
+ * Flux} bridging, request field mapping, and verbatim (untranslated) event forwarding actually work
+ * end to end — not just that the code compiles. In-process transport is the gRPC analog of what
+ * MockWebServer was for the old HTTP integration: a real server/channel pair, just without a real
+ * OS socket.
  */
 class GrpcMlAgentClientTest {
 
@@ -111,146 +111,79 @@ class GrpcMlAgentClientTest {
           .build();
 
   @Test
-  void
-      successfulStream_isParsedIntoDomainEvents_toolCallAndResultAreForwarded_andPingIsConsumedSilently()
-          throws IOException {
+  void everyEventType_isForwardedAsTheIdenticalProtoMessage_inOrder_includingPing()
+      throws IOException {
+    List<AnswerEvent> sent =
+        List.of(
+            AnswerEvent.newBuilder().setChunk(Chunk.newBuilder().setDelta("Hello")).build(),
+            AnswerEvent.newBuilder()
+                .setToolCall(
+                    ToolCall.newBuilder()
+                        .setToolCallId("t1")
+                        .setName("lookup")
+                        .setArgsJson("{\"caseId\":\"case-1\"}"))
+                .build(),
+            AnswerEvent.newBuilder()
+                .setToolResult(
+                    ToolResult.newBuilder()
+                        .setToolCallId("t1")
+                        .setMs(12)
+                        .setRowCount(3)
+                        .setStatus(ToolResult.Status.STATUS_OK))
+                .build(),
+            AnswerEvent.newBuilder().setPing(Ping.newBuilder()).build(),
+            AnswerEvent.newBuilder().setChunk(Chunk.newBuilder().setDelta(" world")).build(),
+            AnswerEvent.newBuilder()
+                .setPayload(AnswerPayload.newBuilder().setCaseManagerAnswerPayload(VALID_PAYLOAD))
+                .build(),
+            AnswerEvent.newBuilder()
+                .setDone(
+                    Done.newBuilder()
+                        .setStopReason(Done.StopReason.STOP_REASON_TRUNCATED)
+                        .setLatencyMs(100)
+                        .setTokensIn(5)
+                        .setTokensOut(10))
+                .build());
     GrpcMlAgentClient client =
         startClientWith(
             observer -> {
-              observer.onNext(
-                  AnswerEvent.newBuilder().setChunk(Chunk.newBuilder().setDelta("Hello")).build());
-              observer.onNext(
-                  AnswerEvent.newBuilder().setChunk(Chunk.newBuilder().setDelta(" world")).build());
-              observer.onNext(
-                  AnswerEvent.newBuilder()
-                      .setToolCall(
-                          ToolCall.newBuilder()
-                              .setToolCallId("t1")
-                              .setName("lookup")
-                              .setArgsJson("{\"caseId\":\"case-1\"}"))
-                      .build());
-              observer.onNext(
-                  AnswerEvent.newBuilder()
-                      .setToolResult(
-                          ToolResult.newBuilder()
-                              .setToolCallId("t1")
-                              .setMs(12)
-                              .setRowCount(3)
-                              .setStatus(ToolResult.Status.STATUS_OK))
-                      .build());
-              observer.onNext(
-                  AnswerEvent.newBuilder()
-                      .setPing(com.cmbotservice.mlagent.grpc.v1.Ping.newBuilder())
-                      .build());
-              observer.onNext(
-                  AnswerEvent.newBuilder()
-                      .setPayload(
-                          AnswerPayload.newBuilder().setCaseManagerAnswerPayload(VALID_PAYLOAD))
-                      .build());
-              observer.onNext(
-                  AnswerEvent.newBuilder()
-                      .setDone(
-                          Done.newBuilder()
-                              .setStopReason(Done.StopReason.STOP_REASON_COMPLETED)
-                              .setLatencyMs(100)
-                              .setTokensIn(5)
-                              .setTokensOut(10))
-                      .build());
+              sent.forEach(observer::onNext);
               observer.onCompleted();
             });
 
-    StepVerifier.create(client.streamResponse(request()))
-        .expectNextMatches(e -> e instanceof MlAgentStreamEvent.Started)
-        .expectNextMatches(
-            e ->
-                e instanceof MlAgentStreamEvent.Token t
-                    && t.sequence() == 1
-                    && t.delta().equals("Hello"))
-        .expectNextMatches(
-            e ->
-                e instanceof MlAgentStreamEvent.Token t
-                    && t.sequence() == 2
-                    && t.delta().equals(" world"))
-        .expectNextMatches(
-            e ->
-                e instanceof MlAgentStreamEvent.ToolCall tc
-                    && tc.toolCallId().equals("t1")
-                    && tc.name().equals("lookup")
-                    && tc.argsJson().equals("{\"caseId\":\"case-1\"}"))
-        .expectNextMatches(
-            e ->
-                e instanceof MlAgentStreamEvent.ToolResult tr
-                    && tr.toolCallId().equals("t1")
-                    && tr.status() == MlAgentStreamEvent.ToolResult.Status.OK
-                    && tr.ms() == 12
-                    && tr.rowCount() == 3)
-        // ping is consumed silently: no domain event for it between tool_result and payload.
-        .expectNextMatches(
-            e ->
-                e instanceof MlAgentStreamEvent.Payload p
-                    && p.payload().keySignals().get(0).signal().equals("s")
-                    && p.payload().citations().get(0).id().equals("c1"))
-        .expectNextMatches(
-            e ->
-                e instanceof MlAgentStreamEvent.Done d
-                    && !d.truncated()
-                    && d.latencyMs() == 100
-                    && d.tokensIn() == 5
-                    && d.tokensOut() == 10)
-        .verifyComplete();
+    List<AnswerEvent> received =
+        client.streamResponse(request()).collectList().block(Duration.ofSeconds(5));
+
+    // Protobuf equals() is deep field-by-field equality: nothing renamed, dropped,
+    // re-typed, reordered, or synthesized (no leading "started" marker of our own).
+    assertThat(received).containsExactlyElementsOf(sent);
   }
 
   @Test
-  void toolResult_withoutRowCount_isMappedToNullRowCount() throws IOException {
+  void toolResult_withUnspecifiedStatusAndNoRowCount_isForwardedUnchanged() throws IOException {
+    AnswerEvent toolResult =
+        AnswerEvent.newBuilder()
+            .setToolResult(
+                ToolResult.newBuilder()
+                    .setToolCallId("t1")
+                    .setStatus(ToolResult.Status.STATUS_UNSPECIFIED))
+            .build();
     GrpcMlAgentClient client =
         startClientWith(
             observer -> {
-              observer.onNext(
-                  AnswerEvent.newBuilder()
-                      .setToolResult(
-                          ToolResult.newBuilder()
-                              .setToolCallId("t1")
-                              .setMs(5)
-                              .setStatus(ToolResult.Status.STATUS_FAILED))
-                      .build());
-              observer.onNext(AnswerEvent.newBuilder().setDone(Done.newBuilder()).build());
+              observer.onNext(toolResult);
               observer.onCompleted();
             });
 
     StepVerifier.create(client.streamResponse(request()))
-        .expectNextMatches(e -> e instanceof MlAgentStreamEvent.Started)
-        .expectNextMatches(
-            e ->
-                e instanceof MlAgentStreamEvent.ToolResult tr
-                    && tr.status() == MlAgentStreamEvent.ToolResult.Status.FAILED
-                    && tr.rowCount() == null)
-        .expectNextMatches(e -> e instanceof MlAgentStreamEvent.Done)
-        .verifyComplete();
-  }
-
-  @Test
-  void toolResult_withUnspecifiedStatus_isMappedToFailedPerContract() throws IOException {
-    GrpcMlAgentClient client =
-        startClientWith(
-            observer -> {
-              observer.onNext(
-                  AnswerEvent.newBuilder()
-                      .setToolResult(
-                          ToolResult.newBuilder()
-                              .setToolCallId("t1")
-                              .setStatus(ToolResult.Status.STATUS_UNSPECIFIED))
-                      .build());
-              observer.onNext(AnswerEvent.newBuilder().setDone(Done.newBuilder()).build());
-              observer.onCompleted();
-            });
-
-    StepVerifier.create(client.streamResponse(request()))
-        .expectNextMatches(e -> e instanceof MlAgentStreamEvent.Started)
-        .expectNextMatches(
-            e ->
-                e instanceof MlAgentStreamEvent.ToolResult tr
-                    && tr.status() == MlAgentStreamEvent.ToolResult.Status.FAILED)
-        .expectNextMatches(e -> e instanceof MlAgentStreamEvent.Done)
+        .assertNext(
+            e -> {
+              assertThat(e).isEqualTo(toolResult);
+              // Not folded into STATUS_FAILED, and no row_count invented.
+              assertThat(e.getToolResult().getStatus())
+                  .isEqualTo(ToolResult.Status.STATUS_UNSPECIFIED);
+              assertThat(e.getToolResult().hasRowCount()).isFalse();
+            })
         .verifyComplete();
   }
 
@@ -285,43 +218,38 @@ class GrpcMlAgentClientTest {
   }
 
   @Test
-  void malformedPayload_keySignalMissingCitation_isMappedToMalformedResponseException()
-      throws IOException {
-    CaseManagerAnswerPayload badPayload =
-        CaseManagerAnswerPayload.newBuilder()
-            .addKeySignals(CaseManagerAnswerPayload.KeySignal.newBuilder().setSignal("s").build())
+  void payload_withKeySignalMissingCitation_isStillForwardedAsIs_notRejected() throws IOException {
+    AnswerEvent payloadEvent =
+        AnswerEvent.newBuilder()
+            .setPayload(
+                AnswerPayload.newBuilder()
+                    .setCaseManagerAnswerPayload(
+                        CaseManagerAnswerPayload.newBuilder()
+                            .addKeySignals(
+                                CaseManagerAnswerPayload.KeySignal.newBuilder().setSignal("s"))))
             .build();
     GrpcMlAgentClient client =
         startClientWith(
             observer -> {
-              observer.onNext(
-                  AnswerEvent.newBuilder()
-                      .setPayload(
-                          AnswerPayload.newBuilder().setCaseManagerAnswerPayload(badPayload))
-                      .build());
+              observer.onNext(payloadEvent);
               observer.onCompleted();
             });
 
-    StepVerifier.create(client.streamResponse(request()))
-        .expectNextMatches(e -> e instanceof MlAgentStreamEvent.Started)
-        .expectError(MlAgentMalformedResponseException.class)
-        .verify(Duration.ofSeconds(5));
+    StepVerifier.create(client.streamResponse(request())).expectNext(payloadEvent).verifyComplete();
   }
 
   @Test
   void unsetAnswerEvent_isIgnoredRatherThanErroring() throws IOException {
+    AnswerEvent done = AnswerEvent.newBuilder().setDone(Done.newBuilder()).build();
     GrpcMlAgentClient client =
         startClientWith(
             observer -> {
               observer.onNext(AnswerEvent.newBuilder().build()); // no oneof case set
-              observer.onNext(AnswerEvent.newBuilder().setDone(Done.newBuilder()).build());
+              observer.onNext(done);
               observer.onCompleted();
             });
 
-    StepVerifier.create(client.streamResponse(request()))
-        .expectNextMatches(e -> e instanceof MlAgentStreamEvent.Started)
-        .expectNextMatches(e -> e instanceof MlAgentStreamEvent.Done)
-        .verifyComplete();
+    StepVerifier.create(client.streamResponse(request())).expectNext(done).verifyComplete();
   }
 
   @Test
@@ -332,7 +260,6 @@ class GrpcMlAgentClientTest {
                 observer.onError(Status.UNAVAILABLE.withDescription("down").asRuntimeException()));
 
     StepVerifier.create(client.streamResponse(request()))
-        .expectNextMatches(e -> e instanceof MlAgentStreamEvent.Started)
         .expectError(MlAgentUnavailableException.class)
         .verify(Duration.ofSeconds(5));
   }
@@ -355,7 +282,6 @@ class GrpcMlAgentClientTest {
                     Status.fromCode(code).withDescription("boom").asRuntimeException()));
 
     StepVerifier.create(client.streamResponse(request()))
-        .expectNextMatches(e -> e instanceof MlAgentStreamEvent.Started)
         .expectErrorMatches(expectedType::isInstance)
         .verify(Duration.ofSeconds(5));
   }
@@ -378,7 +304,6 @@ class GrpcMlAgentClientTest {
                     Status.fromCode(code).withDescription("boom").asRuntimeException()));
 
     StepVerifier.create(client.streamResponse(request()))
-        .expectNextMatches(e -> e instanceof MlAgentStreamEvent.Started)
         .expectErrorSatisfies(
             err -> {
               assertThat(err).isInstanceOf(MlAgentRejectedException.class);
@@ -387,56 +312,28 @@ class GrpcMlAgentClientTest {
         .verify(Duration.ofSeconds(5));
   }
 
-  @ParameterizedTest(name = "in-stream error code {0} -> {1}")
+  @ParameterizedTest(name = "in-stream error code {0}, retryable={1} is forwarded as-is")
   @CsvSource({
-    "ERROR_CODE_MODEL_REFUSED, ML_AGENT_REFUSED",
-    "ERROR_CODE_DATA_UNAVAILABLE, ML_AGENT_ERROR",
-    "ERROR_CODE_INTERNAL, INTERNAL_ERROR",
-    "ERROR_CODE_UNSPECIFIED, INTERNAL_ERROR"
+    "ERROR_CODE_MODEL_REFUSED, false",
+    "ERROR_CODE_DATA_UNAVAILABLE, true",
+    "ERROR_CODE_INTERNAL, false",
+    "ERROR_CODE_UNSPECIFIED, false"
   })
-  void nonRetryableInStreamError_isMappedToMlAgentRejectedExceptionWithTheRightErrorCode(
-      String protoCode, String expectedErrorCode) throws Exception {
-    Error.Code code = Error.Code.valueOf(protoCode);
-    ErrorCode expected = ErrorCode.valueOf(expectedErrorCode);
+  void inStreamErrorEvent_isForwardedAsAnEvent_neverConvertedIntoAnException(
+      String protoCode, boolean retryable) throws Exception {
+    AnswerEvent errorEvent =
+        AnswerEvent.newBuilder()
+            .setError(
+                Error.newBuilder().setCode(Error.Code.valueOf(protoCode)).setRetryable(retryable))
+            .build();
     GrpcMlAgentClient client =
         startClientWith(
             observer -> {
-              observer.onNext(
-                  AnswerEvent.newBuilder()
-                      .setError(Error.newBuilder().setCode(code).setRetryable(false))
-                      .build());
+              observer.onNext(errorEvent);
               observer.onCompleted();
             });
 
-    StepVerifier.create(client.streamResponse(request()))
-        .expectNextMatches(e -> e instanceof MlAgentStreamEvent.Started)
-        .expectErrorSatisfies(
-            err -> {
-              assertThat(err).isInstanceOf(MlAgentRejectedException.class);
-              assertThat(((MlAgentRejectedException) err).errorCode()).isEqualTo(expected);
-            })
-        .verify(Duration.ofSeconds(5));
-  }
-
-  @Test
-  void retryableInStreamError_isMappedToMlAgentCommunicationException() throws IOException {
-    GrpcMlAgentClient client =
-        startClientWith(
-            observer -> {
-              observer.onNext(
-                  AnswerEvent.newBuilder()
-                      .setError(
-                          Error.newBuilder()
-                              .setCode(Error.Code.ERROR_CODE_DATA_UNAVAILABLE)
-                              .setRetryable(true))
-                      .build());
-              observer.onCompleted();
-            });
-
-    StepVerifier.create(client.streamResponse(request()))
-        .expectNextMatches(e -> e instanceof MlAgentStreamEvent.Started)
-        .expectError(MlAgentCommunicationException.class)
-        .verify(Duration.ofSeconds(5));
+    StepVerifier.create(client.streamResponse(request())).expectNext(errorEvent).verifyComplete();
   }
 
   @Test

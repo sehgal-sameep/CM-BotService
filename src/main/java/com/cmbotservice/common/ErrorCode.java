@@ -1,8 +1,10 @@
 package com.cmbotservice.common;
 
 /**
- * Stable machine-readable error codes used both in REST error bodies and in SSE {@code error}
- * events. Kept small and explicit rather than surfacing raw exception messages to callers.
+ * Stable machine-readable error codes used both in REST error bodies and in {@code service_error}
+ * SSE events (failures originating in this backend or its transport — never the ML Agent's own
+ * {@code error} event, whose {@code code} is forwarded untouched). Kept small and explicit rather
+ * than surfacing raw exception messages to callers.
  */
 public enum ErrorCode {
   VALIDATION_ERROR,
@@ -11,12 +13,6 @@ public enum ErrorCode {
   ML_AGENT_UNAVAILABLE,
   ML_AGENT_ERROR,
   CONCURRENCY_LIMIT_REACHED,
-  /**
-   * The ML Agent explicitly refused to process the request (its {@code ERROR_CODE_MODEL_REFUSED}) —
-   * never retryable. Distinct from {@link #ML_AGENT_ERROR} because the agent understood the request
-   * and declined it, rather than failing to process it.
-   */
-  ML_AGENT_REFUSED,
   /**
    * No valid BFF session could be established for this request (missing cookie, no matching Redis
    * record, or an expired access token) — see {@code SessionAuthenticationWebFilter}. The caller

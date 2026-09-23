@@ -101,7 +101,7 @@ class ChatControllerAuthenticationTest {
         .expectStatus()
         .isOk()
         .expectBody(String.class)
-        .value(body -> assertThat(body).contains("event:stream-start", "event:stream-complete"));
+        .value(body -> assertThat(body).contains("event:done"));
   }
 
   private static SessionContext validSession() {

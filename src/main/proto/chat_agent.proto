@@ -4,8 +4,9 @@ syntax = "proto3";
 // gRPC transport. Thoughtful Labs' own finalized 3-file contract (this file,
 // case_manager.proto, common.proto — see ../../docs for the originals as received,
 // and ../../docs/ARCHITECTURE.md §2 for background). Generated Java sources land
-// under target/generated-sources/protobuf — see GrpcMlAgentClient for the mapping
-// to/from this backend's internal MlAgentRequest/MlAgentStreamEvent domain types.
+// under target/generated-sources/protobuf. GrpcMlAgentClient maps this backend's
+// MlAgentRequest into AskCaseManagerRequest; AnswerEvents are not mapped at all —
+// they are forwarded to the frontend verbatim (see com.cmbotservice.sse.SseEvents).
 
 package cmbotservice.mlagent.v1;
 

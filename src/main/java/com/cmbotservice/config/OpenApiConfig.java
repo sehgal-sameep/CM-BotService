@@ -36,7 +36,9 @@ public class OpenApiConfig {
                         + "Agent. This service holds no conversation state between requests — it "
                         + "validates each request, forwards it to the ML Agent through a circuit "
                         + "breaker, bulkhead, and bounded retry, and streams the response back over "
-                        + "SSE. Conversation memory (if any) is owned entirely by the ML Agent; this "
+                        + "SSE. The ML Agent's response events are forwarded as-is — same event "
+                        + "names, field names, and nesting as its protobuf contract — with no "
+                        + "backend-owned response schema in between. Conversation memory (if any) is owned entirely by the ML Agent; this "
                         + "backend does not implement any ML/LLM logic itself. The ML Agent is "
                         + "currently a configurable mock — see the 'Chat' endpoint description for the "
                         + "scenario-simulation keywords.")

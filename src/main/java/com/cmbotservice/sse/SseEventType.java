@@ -1,18 +1,20 @@
 package com.cmbotservice.sse;
 
 /**
- * SSE {@code event:} names understood by chatbot clients. Part of the documented SSE contract — see
- * the OpenAPI description on {@code ChatController}.
+ * The only SSE {@code event:} name this backend defines itself. Every other event name on the
+ * stream is the ML Agent's own {@code AnswerEvent} oneof field name ({@code chunk}, {@code
+ * tool_call}, {@code tool_result}, {@code payload}, {@code done}, {@code error}, {@code ping}),
+ * read from the generated protobuf descriptor at runtime by {@link SseEvents} rather than
+ * hard-coded here, so a new arm added to the contract flows through with its own name unchanged.
  */
 public final class SseEventType {
 
-  public static final String STREAM_START = "stream-start";
-  public static final String MESSAGE = "message";
-  public static final String TOOL_CALL = "tool-call";
-  public static final String TOOL_RESULT = "tool-result";
-  public static final String PAYLOAD = "payload";
-  public static final String STREAM_COMPLETE = "stream-complete";
-  public static final String ERROR = "error";
+  /**
+   * A failure originating in this backend or its transport to the ML Agent — see {@link
+   * ServiceErrorEvent}. Deliberately distinct from the ML Agent's own {@code error} event name,
+   * which carries a different payload.
+   */
+  public static final String SERVICE_ERROR = "service_error";
 
   private SseEventType() {}
 }

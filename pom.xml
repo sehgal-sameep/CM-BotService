@@ -118,6 +118,13 @@
 			<groupId>com.google.protobuf</groupId>
 			<artifactId>protobuf-java</artifactId>
 		</dependency>
+		<!-- JsonFormat: the canonical proto3 JSON mapping, used to forward the ML Agent's
+		     AnswerEvents to the frontend verbatim (proto field names preserved) instead of
+		     hand-mapping them into our own DTOs — see SseEvents. -->
+		<dependency>
+			<groupId>com.google.protobuf</groupId>
+			<artifactId>protobuf-java-util</artifactId>
+		</dependency>
 		<!-- Generated gRPC service code (ChatAgentGrpc) references javax.annotation.Generated,
 		     which was removed from the JDK itself in Java 9+ — needs to come from a
 		     library on Java 21. -->

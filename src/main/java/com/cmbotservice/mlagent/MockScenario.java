@@ -14,6 +14,8 @@ public enum MockScenario {
   SLOW("trigger:slow"),
   TIMEOUT("trigger:timeout"),
   ERROR("trigger:error"),
+  /** The agent's own in-stream {@code error} event (model-level), as opposed to {@link #ERROR}. */
+  AGENT_ERROR("trigger:agent-error"),
   EMPTY("trigger:empty"),
   REJECTED("trigger:rejected");
 

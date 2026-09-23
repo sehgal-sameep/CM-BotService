@@ -12,9 +12,17 @@ import com.cmbotservice.config.ResilienceProperties;
 import com.cmbotservice.context.RequestContext;
 import com.cmbotservice.mlagent.MlAgentClient;
 import com.cmbotservice.mlagent.MlAgentRequest;
-import com.cmbotservice.mlagent.MlAgentStreamEvent;
-import com.cmbotservice.sse.StreamCompleteEvent;
-import com.cmbotservice.sse.StreamErrorEvent;
+import com.cmbotservice.mlagent.grpc.v1.AnswerEvent;
+import com.cmbotservice.mlagent.grpc.v1.AnswerPayload;
+import com.cmbotservice.mlagent.grpc.v1.CaseManagerAnswerPayload;
+import com.cmbotservice.mlagent.grpc.v1.Chunk;
+import com.cmbotservice.mlagent.grpc.v1.Done;
+import com.cmbotservice.mlagent.grpc.v1.Error;
+import com.cmbotservice.mlagent.grpc.v1.Ping;
+import com.cmbotservice.mlagent.grpc.v1.ToolCall;
+import com.cmbotservice.mlagent.grpc.v1.ToolResult;
+import com.cmbotservice.sse.ServiceErrorEvent;
+import com.cmbotservice.sse.SseEvents;
 import com.cmbotservice.web.dto.ChatRequest;
 import com.cmbotservice.web.dto.HistoryTurn;
 import io.github.resilience4j.bulkhead.Bulkhead;
@@ -41,6 +49,14 @@ import reactor.core.publisher.Mono;
  * Thread.sleep} for correctness.
  */
 class ChatOrchestrationServiceTest {
+
+  private static final AnswerEvent CHUNK =
+      AnswerEvent.newBuilder().setChunk(Chunk.newBuilder().setDelta("chunk")).build();
+
+  private static final AnswerEvent DONE =
+      AnswerEvent.newBuilder()
+          .setDone(Done.newBuilder().setStopReason(Done.StopReason.STOP_REASON_COMPLETED))
+          .build();
 
   private final ChatMetrics metrics = new ChatMetrics(new SimpleMeterRegistry());
 
@@ -96,9 +112,7 @@ class ChatOrchestrationServiceTest {
                     attempts.incrementAndGet() < 3
                         ? Flux.error(
                             new MlAgentUnavailableException("transient connection failure"))
-                        : Flux.just(
-                            new MlAgentStreamEvent.Started(),
-                            new MlAgentStreamEvent.Done(0, 0, 0, false)));
+                        : Flux.just(DONE));
     ChatOrchestrationService service =
         newService(
             CircuitBreaker.ofDefaults("t1"),
@@ -114,9 +128,7 @@ class ChatOrchestrationServiceTest {
             .block(Duration.ofSeconds(5));
 
     assertThat(attempts.get()).isEqualTo(3);
-    assertThat(events)
-        .isNotNull()
-        .anySatisfy(e -> assertThat(e.data()).isInstanceOf(StreamCompleteEvent.class));
+    assertThat(events).isNotNull().anySatisfy(e -> assertThat(e.event()).isEqualTo("done"));
   }
 
   @Test
@@ -126,8 +138,7 @@ class ChatOrchestrationServiceTest {
         request -> {
           attempts.incrementAndGet();
           return Flux.concat(
-              Mono.just(new MlAgentStreamEvent.Started()),
-              Flux.error(new MlAgentUnavailableException("dropped mid-stream")));
+              Mono.just(CHUNK), Flux.error(new MlAgentUnavailableException("dropped mid-stream")));
         };
     ChatOrchestrationService service =
         newService(
@@ -150,7 +161,7 @@ class ChatOrchestrationServiceTest {
             e ->
                 assertThat(e.data())
                     .isInstanceOfSatisfying(
-                        StreamErrorEvent.class,
+                        ServiceErrorEvent.class,
                         err ->
                             assertThat(err.errorCode()).isEqualTo(ErrorCode.ML_AGENT_UNAVAILABLE)));
   }
@@ -230,7 +241,7 @@ class ChatOrchestrationServiceTest {
             e ->
                 assertThat(e.data())
                     .isInstanceOfSatisfying(
-                        StreamErrorEvent.class,
+                        ServiceErrorEvent.class,
                         err ->
                             assertThat(err.errorCode())
                                 .isEqualTo(ErrorCode.CONCURRENCY_LIMIT_REACHED)));
@@ -243,8 +254,7 @@ class ChatOrchestrationServiceTest {
             "bh-full",
             BulkheadConfig.custom().maxConcurrentCalls(1).maxWaitDuration(Duration.ZERO).build());
     CircuitBreaker circuitBreaker = CircuitBreaker.ofDefaults("cb-passthrough");
-    MlAgentClient holdsThePermitOpen =
-        request -> Flux.concat(Mono.just(new MlAgentStreamEvent.Started()), Mono.never());
+    MlAgentClient holdsThePermitOpen = request -> Flux.concat(Mono.just(CHUNK), Mono.never());
     ChatOrchestrationService service =
         newService(circuitBreaker, bulkhead, 1, defaultChatProperties(), holdsThePermitOpen);
 
@@ -263,7 +273,7 @@ class ChatOrchestrationServiceTest {
               e ->
                   assertThat(e.data())
                       .isInstanceOfSatisfying(
-                          StreamErrorEvent.class,
+                          ServiceErrorEvent.class,
                           err ->
                               assertThat(err.errorCode())
                                   .isEqualTo(ErrorCode.CONCURRENCY_LIMIT_REACHED)));
@@ -276,10 +286,7 @@ class ChatOrchestrationServiceTest {
   void totalDeadline_stopsAStreamThatNeverCompletesEvenWhileActivelyEmitting() {
     MlAgentClient infiniteChunks =
         request ->
-            Flux.concat(
-                Mono.just(new MlAgentStreamEvent.Started()),
-                Flux.interval(Duration.ofMillis(20))
-                    .map(i -> new MlAgentStreamEvent.Token("chunk", i.intValue() + 1)));
+            Flux.concat(Mono.just(CHUNK), Flux.interval(Duration.ofMillis(20)).map(i -> CHUNK));
     ChatProperties shortDeadline = new ChatProperties(4000, Duration.ofMillis(150));
     ChatOrchestrationService service =
         newService(
@@ -298,7 +305,7 @@ class ChatOrchestrationServiceTest {
     assertThat(events).isNotNull().isNotEmpty();
     assertThat(events.getLast().data())
         .isInstanceOfSatisfying(
-            StreamErrorEvent.class,
+            ServiceErrorEvent.class,
             err -> assertThat(err.errorCode()).isEqualTo(ErrorCode.ML_AGENT_TIMEOUT));
   }
 
@@ -308,8 +315,7 @@ class ChatOrchestrationServiceTest {
     MlAgentClient shouldNeverBeCalled =
         request -> {
           callCount.incrementAndGet();
-          return Flux.just(
-              new MlAgentStreamEvent.Started(), new MlAgentStreamEvent.Done(0, 0, 0, false));
+          return Flux.just(DONE);
         };
     ChatProperties tinyLimit = new ChatProperties(5, Duration.ofSeconds(10));
     ChatOrchestrationService service =
@@ -333,7 +339,7 @@ class ChatOrchestrationServiceTest {
             e ->
                 assertThat(e.data())
                     .isInstanceOfSatisfying(
-                        StreamErrorEvent.class,
+                        ServiceErrorEvent.class,
                         err -> assertThat(err.errorCode()).isEqualTo(ErrorCode.VALIDATION_ERROR)));
   }
 
@@ -344,7 +350,7 @@ class ChatOrchestrationServiceTest {
         request -> {
           attempts.incrementAndGet();
           return Flux.concat(
-              Mono.just(new MlAgentStreamEvent.Started()),
+              Mono.just(CHUNK),
               Flux.error(
                   new MlAgentRejectedException(
                       ErrorCode.NOT_FOUND, "case not found in that tenant")));
@@ -370,29 +376,101 @@ class ChatOrchestrationServiceTest {
             e ->
                 assertThat(e.data())
                     .isInstanceOfSatisfying(
-                        StreamErrorEvent.class,
+                        ServiceErrorEvent.class,
                         err -> assertThat(err.errorCode()).isEqualTo(ErrorCode.NOT_FOUND)));
   }
 
   @Test
-  void refusedException_isNeverRetriedAndMapsToMlAgentRefused() {
-    AtomicInteger attempts = new AtomicInteger();
-    MlAgentClient alwaysRefused =
-        request -> {
-          attempts.incrementAndGet();
-          return Flux.concat(
-              Mono.just(new MlAgentStreamEvent.Started()),
-              Flux.error(
-                  new MlAgentRejectedException(
-                      ErrorCode.ML_AGENT_REFUSED, "the model refused to answer")));
-        };
+  void everyAgentEvent_isForwardedToTheFrontendAsIs_inOrder_withNoEventsAddedOrRemoved() {
+    List<AnswerEvent> agentEvents =
+        List.of(
+            AnswerEvent.newBuilder()
+                .setToolCall(
+                    ToolCall.newBuilder()
+                        .setToolCallId("t-1")
+                        .setName("getCase")
+                        .setArgsJson("{\"caseId\":\"case-1\"}"))
+                .build(),
+            AnswerEvent.newBuilder()
+                .setToolResult(
+                    ToolResult.newBuilder()
+                        .setToolCallId("t-1")
+                        .setStatus(ToolResult.Status.STATUS_OK)
+                        .setMs(42)
+                        .setRowCount(7))
+                .build(),
+            AnswerEvent.newBuilder().setChunk(Chunk.newBuilder().setDelta("Hello")).build(),
+            AnswerEvent.newBuilder().setPing(Ping.newBuilder()).build(),
+            AnswerEvent.newBuilder().setChunk(Chunk.newBuilder().setDelta(" world")).build(),
+            AnswerEvent.newBuilder()
+                .setPayload(
+                    AnswerPayload.newBuilder()
+                        .setCaseManagerAnswerPayload(
+                            CaseManagerAnswerPayload.newBuilder()
+                                .addKeySignals(
+                                    CaseManagerAnswerPayload.KeySignal.newBuilder()
+                                        .setSignal("s")
+                                        .addCitations("c1"))))
+                .build(),
+            AnswerEvent.newBuilder()
+                .setDone(
+                    Done.newBuilder()
+                        .setStopReason(Done.StopReason.STOP_REASON_TRUNCATED)
+                        .setLatencyMs(1800)
+                        .setTokensIn(12)
+                        .setTokensOut(140))
+                .build());
     ChatOrchestrationService service =
         newService(
-            CircuitBreaker.ofDefaults("t7"),
-            Bulkhead.ofDefaults("t7"),
+            CircuitBreaker.ofDefaults("t10"),
+            Bulkhead.ofDefaults("t10"),
             5,
             defaultChatProperties(),
-            alwaysRefused);
+            request -> Flux.fromIterable(agentEvents));
+
+    List<ServerSentEvent<Object>> events =
+        service
+            .streamMessage(context(), chatRequest("hello"))
+            .collectList()
+            .block(Duration.ofSeconds(5));
+
+    assertThat(events).isNotNull().hasSize(agentEvents.size());
+    for (int i = 0; i < agentEvents.size(); i++) {
+      AnswerEvent sent = agentEvents.get(i);
+      ServerSentEvent<Object> received = events.get(i);
+      assertThat(received.id()).isEqualTo(String.valueOf(i));
+      assertThat(received.event()).isEqualTo(SseEvents.eventName(sent));
+      assertThat(received.data()).isEqualTo(SseEvents.toJson(sent));
+    }
+    assertThat(events)
+        .extracting(ServerSentEvent::event)
+        .containsExactly("tool_call", "tool_result", "chunk", "ping", "chunk", "payload", "done");
+  }
+
+  @Test
+  void agentErrorEvent_isForwardedAsIs_notRetried_andNotConvertedIntoAServiceError() {
+    AtomicInteger attempts = new AtomicInteger();
+    AnswerEvent agentError =
+        AnswerEvent.newBuilder()
+            .setError(
+                Error.newBuilder()
+                    .setCode(Error.Code.ERROR_CODE_DATA_UNAVAILABLE)
+                    .setRetryable(true))
+            .build();
+    MlAgentClient emitsAgentError =
+        request ->
+            Flux.defer(
+                () -> {
+                  attempts.incrementAndGet();
+                  return Flux.just(agentError);
+                });
+    ChatOrchestrationService service =
+        newService(
+            CircuitBreaker.ofDefaults("t11"),
+            Bulkhead.ofDefaults("t11"),
+            5,
+            defaultChatProperties(),
+            emitsAgentError);
 
     List<ServerSentEvent<Object>> events =
         service
@@ -401,14 +479,36 @@ class ChatOrchestrationServiceTest {
             .block(Duration.ofSeconds(5));
 
     assertThat(attempts.get()).isEqualTo(1);
-    assertThat(events)
-        .isNotNull()
-        .anySatisfy(
-            e ->
-                assertThat(e.data())
-                    .isInstanceOfSatisfying(
-                        StreamErrorEvent.class,
-                        err -> assertThat(err.errorCode()).isEqualTo(ErrorCode.ML_AGENT_REFUSED)));
+    assertThat(events).isNotNull().hasSize(1);
+    assertThat(events.getFirst().event()).isEqualTo("error");
+    assertThat(events.getFirst().data())
+        .isEqualTo("{\"error\":{\"code\":\"ERROR_CODE_DATA_UNAVAILABLE\",\"retryable\":true}}");
+  }
+
+  @Test
+  void backendFailure_isTheOnlyCaseThatProducesAServiceErrorEvent() {
+    MlAgentClient unreachable =
+        request -> Flux.error(new MlAgentUnavailableException("connection refused"));
+    ChatOrchestrationService service =
+        newService(
+            CircuitBreaker.ofDefaults("t12"),
+            Bulkhead.ofDefaults("t12"),
+            0,
+            defaultChatProperties(),
+            unreachable);
+
+    List<ServerSentEvent<Object>> events =
+        service
+            .streamMessage(context(), chatRequest("hello"))
+            .collectList()
+            .block(Duration.ofSeconds(5));
+
+    assertThat(events).isNotNull().hasSize(1);
+    assertThat(events.getFirst().event()).isEqualTo("service_error");
+    assertThat(events.getFirst().data())
+        .isInstanceOfSatisfying(
+            ServiceErrorEvent.class,
+            err -> assertThat(err.errorCode()).isEqualTo(ErrorCode.ML_AGENT_UNAVAILABLE));
   }
 
   @Test
@@ -417,8 +517,7 @@ class ChatOrchestrationServiceTest {
     MlAgentClient capturing =
         request -> {
           captured.set(request);
-          return Flux.just(
-              new MlAgentStreamEvent.Started(), new MlAgentStreamEvent.Done(0, 0, 0, false));
+          return Flux.just(DONE);
         };
     ChatOrchestrationService service =
         newService(
@@ -450,8 +549,7 @@ class ChatOrchestrationServiceTest {
     MlAgentClient capturing =
         request -> {
           captured.set(request);
-          return Flux.just(
-              new MlAgentStreamEvent.Started(), new MlAgentStreamEvent.Done(0, 0, 0, false));
+          return Flux.just(DONE);
         };
     ChatOrchestrationService service =
         newService(

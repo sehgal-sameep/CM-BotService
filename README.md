@@ -127,8 +127,9 @@ curl -N -X POST "http://localhost:8080/api/v1/chat/messages" \
   -d '{"caseId":"case-1001","message":"Summarize this case for me"}'
 ```
 
-`stream-complete` carries no identifier to capture — see the SSE event contract table
-below. `truncated` on that event tells you whether the agent cut generation short.
+The response is the ML Agent's own event stream, untranslated — see the SSE event
+contract below. `done` carries no identifier to capture; its `stop_reason` tells you
+whether the agent cut generation short (`STOP_REASON_TRUNCATED`).
 
 ### 2. Continue the conversation
 
@@ -151,10 +152,11 @@ The mock recognizes these keywords anywhere in `message`:
 
 ```bash
 curl -N -X POST ".../chat/messages" -H "Content-Type: application/json" -H "X-Tenant-Id: t" -H "X-Org-Id: o" -d '{"caseId":"c","message":"trigger:slow"}'
-curl -N -X POST ".../chat/messages" -H "Content-Type: application/json" -H "X-Tenant-Id: t" -H "X-Org-Id: o" -d '{"caseId":"c","message":"trigger:timeout"}'   # first-response/idle timeout, then an `error` event
-curl -N -X POST ".../chat/messages" -H "Content-Type: application/json" -H "X-Tenant-Id: t" -H "X-Org-Id: o" -d '{"caseId":"c","message":"trigger:error"}'
+curl -N -X POST ".../chat/messages" -H "Content-Type: application/json" -H "X-Tenant-Id: t" -H "X-Org-Id: o" -d '{"caseId":"c","message":"trigger:timeout"}'   # first-response timeout, then a `service_error` event
+curl -N -X POST ".../chat/messages" -H "Content-Type: application/json" -H "X-Tenant-Id: t" -H "X-Org-Id: o" -d '{"caseId":"c","message":"trigger:error"}'     # transport failure: retried, then `service_error` ML_AGENT_ERROR
+curl -N -X POST ".../chat/messages" -H "Content-Type: application/json" -H "X-Tenant-Id: t" -H "X-Org-Id: o" -d '{"caseId":"c","message":"trigger:agent-error"}' # the ML Agent's own `error` event, forwarded as-is
 curl -N -X POST ".../chat/messages" -H "Content-Type: application/json" -H "X-Tenant-Id: t" -H "X-Org-Id: o" -d '{"caseId":"c","message":"trigger:empty"}'
-curl -N -X POST ".../chat/messages" -H "Content-Type: application/json" -H "X-Tenant-Id: t" -H "X-Org-Id: o" -d '{"caseId":"c","message":"trigger:rejected"}'               # -> errorCode NOT_FOUND, not retried
+curl -N -X POST ".../chat/messages" -H "Content-Type: application/json" -H "X-Tenant-Id: t" -H "X-Org-Id: o" -d '{"caseId":"c","message":"trigger:rejected"}'               # -> `service_error` errorCode NOT_FOUND, not retried
 ```
 
 ### 4. Request validation
@@ -169,14 +171,15 @@ curl -s -X POST "http://localhost:8080/api/v1/chat/messages" -H "Content-Type: a
 
 ### 5. Force the circuit breaker open (local demo)
 
-With default config (`failure-rate-threshold: 50`, `minimum-number-of-calls: 5`),
-five-ish consecutive `trigger:error` calls will open it:
+With default config (`failure-rate-threshold: 50`, `minimum-number-of-calls: 5`), a
+couple of `trigger:error` calls will open it. Each call makes up to 4 attempts (1 + 3
+retries, since nothing has streamed yet), and every attempt counts toward the breaker:
 
 ```bash
 for i in 1 2 3 4 5; do curl -s -o /dev/null -X POST "http://localhost:8080/api/v1/chat/messages" -H "Content-Type: application/json" -H "X-Tenant-Id: t" -H "X-Org-Id: o" -d '{"caseId":"c","message":"trigger:error"}'; done
 curl -s http://localhost:8080/actuator/circuitbreakers   # state: OPEN
 curl -N -X POST "http://localhost:8080/api/v1/chat/messages" -H "Content-Type: application/json" -H "X-Tenant-Id: t" -H "X-Org-Id: o" -d '{"caseId":"c","message":"hello"}'
-# -> immediate `error` event, errorCode: CONCURRENCY_LIMIT_REACHED — the mock is never called
+# -> immediate `service_error` event, errorCode: CONCURRENCY_LIMIT_REACHED — the mock is never called
 curl -s http://localhost:8080/actuator/health/readiness  # -> still UP
 ```
 
@@ -259,22 +262,51 @@ UNAUTHENTICATED` if not, `503 SESSION_STORE_UNAVAILABLE` if Redis is unreachable
 
 ## SSE event contract (FE ↔ BE)
 
-| Event | Payload | Cardinality |
-|---|---|---|
-| `stream-start` | `{ messageId, timestamp }` | one, first |
-| `message` | `{ messageId, sequence, content, timestamp }` | many — one streamed answer fragment (the ML Agent's own `chunk`/`delta`) |
-| `tool-call` | `{ messageId, toolCallId, name, argsJson, timestamp }` | zero or more, any point in the stream — the ML Agent invoked a tool (its own `tool_call`); `toolCallId` matches the corresponding `tool-result` |
-| `tool-result` | `{ messageId, toolCallId, status, ms, rowCount, timestamp }` | zero or more, any point in the stream — the outcome of a tool invocation (its own `tool_result`); `status` is `OK`/`FAILED` (unrecognised values fold to `FAILED`), `rowCount` is `null` unless `status` is `OK` and the ML Agent reported one |
-| `payload` | `{ messageId, payload, timestamp }` | at most one, always before `stream-complete` — the structured, cited case analysis (`keySignals`, `citations` only — see `CaseSummaryPayload`) |
-| `stream-complete` | `{ messageId, totalChunks, truncated, timestamp }` | one, terminal — `truncated` is true only if the agent cut generation short (its `stop_reason`); there is no conversation/continuation identifier to hand back, ever — `history` is the sole resumption mechanism |
-| `error` | `{ messageId, errorCode, errorMessage, timestamp }` | terminal |
+**The ML Agent's response is streamed to the frontend as-is.** This backend doesn't
+rename events or fields, reshape payloads, or add a wrapper. Each Thoughtful Labs
+`AnswerEvent` (`src/main/proto/chat_agent.proto`) becomes one SSE event:
 
-The ML Agent's own `tool_call`/`tool_result` events are forwarded to the frontend as
-the `tool-call`/`tool-result` SSE events above (also logged at DEBUG by
-`GrpcMlAgentClient`), so case managers can see what the ML Agent did to produce an
-answer. `ping` (a pure transport keepalive with no content) remains consumed and logged
-only (TRACE) by `GrpcMlAgentClient`/`MockMlAgentClient` and is never forwarded as an SSE
-event.
+- `event:` is the name of the `AnswerEvent` oneof field that is set: `chunk`,
+  `tool_call`, `tool_result`, `payload`, `done`, `error`, `ping`. It's read from the
+  protobuf descriptor, not hard-coded, so a new arm added to the contract flows
+  through under its own name.
+- `data:` is the whole `AnswerEvent` in the canonical proto3 JSON mapping
+  (`JsonFormat`), with the **original `.proto` field names and nesting**, enums as
+  their proto names, and fields at their default value still printed. Per that mapping,
+  `int64` fields are JSON strings.
+- `id:` is a 0-based frame counter, the only thing this backend adds (SSE transport).
+
+```
+event:tool_call
+data:{"tool_call":{"tool_call_id":"t-1","name":"getCase","args_json":"{\"caseId\":\"case-1001\"}"}}
+
+event:tool_result
+data:{"tool_result":{"tool_call_id":"t-1","status":"STATUS_OK","ms":"42","row_count":"7"}}
+
+event:chunk
+data:{"chunk":{"delta":"This case was..."}}
+
+event:payload
+data:{"payload":{"case_manager_answer_payload":{"key_signals":[{"signal":"...","citations":["evt-123"]}],"citations":[{"id":"evt-123","source":"getCase","fields":["risk_score"]}]}}}
+
+event:done
+data:{"done":{"stop_reason":"STOP_REASON_COMPLETED","latency_ms":"1800","tokens_in":"12","tokens_out":"140"}}
+```
+
+Every ML Agent event type is forwarded, including `ping` (a keepalive, harmless to
+ignore) and the agent's own model-level `error` (`{"error":{"code":...,"retryable":...}}`),
+which is never converted into a backend error. The only agent event not forwarded is
+one with its `event` oneof unset: the contract says to ignore it, and it carries
+nothing recognisable.
+
+| Event | Source | Payload |
+|---|---|---|
+| `chunk`, `tool_call`, `tool_result`, `payload`, `done`, `error`, `ping` | ML Agent, verbatim | the `AnswerEvent` as proto3 JSON (see above) |
+| `service_error` | this backend | `{ messageId, errorCode, errorMessage, timestamp }`, terminal. Only for failures that produced no agent event: unreachable/timed-out/gRPC-rejected agent, circuit breaker, bulkhead, message-length check |
+
+Every stream ends with exactly one of `done`, `error`, or `service_error`. The full
+frontend-facing walkthrough is in [`docs/CHAT_API_GUIDE.md`](docs/CHAT_API_GUIDE.md)
+§5–§8.
 
 ## Resilience behavior
 
@@ -294,15 +326,17 @@ first-response/idle timeout above is the single, client-agnostic timeout authori
 (see `docs/ARCHITECTURE.md §8`).
 
 Every failure that occurs **after** the SSE response has committed (200,
-`text/event-stream`) — including a circuit-breaker rejection, a bulkhead rejection, a
-timeout, or an ML Agent failure — surfaces as an `error` SSE event on the same stream,
-never a different HTTP status; see architecture doc §4/§6.
+`text/event-stream`) and has no ML Agent event of its own — a circuit-breaker
+rejection, a bulkhead rejection, a timeout, or a transport-level ML Agent failure —
+surfaces as a `service_error` SSE event on the same stream, never a different HTTP
+status; see architecture doc §4/§6. The ML Agent's own `error` event is simply
+forwarded.
 
 ## Health, readiness, and graceful shutdown
 
 `/actuator/health/readiness` **stays UP even while the ML Agent circuit breaker is
 open** — a downstream ML Agent outage is handled through the circuit breaker,
-`error` events, and metrics, not by pulling healthy instances out of rotation (see
+`service_error` events, and metrics, not by pulling healthy instances out of rotation (see
 architecture doc §15 for why). The plain `/actuator/health` aggregate does reflect the
 circuit breaker's own health indicator.
 
@@ -337,7 +371,8 @@ aggregator. Force it with:
 
 Logical event names to grep for: `CHAT_REQUEST_RECEIVED`, `ML_REQUEST_STARTED`,
 `ML_STREAM_STARTED`, `ML_STREAM_COMPLETED`, `ML_REQUEST_TIMEOUT`, `ML_REQUEST_FAILED`,
-`ML_REQUEST_RETRY`, `SSE_CLIENT_CANCELLED`, `CIRCUIT_BREAKER_OPEN`,
+`ML_REQUEST_RETRY`, `ML_AGENT_ERROR_EVENT` (the agent sent its own `error` event, logged with
+its `code`/`retryable`), `SSE_CLIENT_CANCELLED`, `CIRCUIT_BREAKER_OPEN`,
 `CONCURRENCY_LIMIT_REACHED`. Never logged: full prompts/responses (DEBUG-only,
 truncated preview via `LogSanitizer`), auth headers, stack traces in responses.
 
@@ -348,7 +383,7 @@ by construction — see `ChatMetrics`):
 
 ```text
 chat.requests.total / chat.requests.active
-ml.requests.total{result=success|failed|timeout|rejected}
+ml.requests.total{result=success|failed|timeout|rejected}   # failed includes streams ending in the agent's own `error` event
 ml.stream.active / ml.stream.duration / ml.first_response.latency
 sse.connections.active / .completed / .cancelled
 resilience4j_circuitbreaker_state{name=mlAgent,state=...} / resilience4j_bulkhead_*
@@ -384,29 +419,36 @@ fails startup, not a request. See `src/main/resources/application.yml`:
 ./mvnw test
 ```
 
+- `SseEventsTest` — pins the wire format: every event name is the agent's own oneof
+  field name (and every arm of the contract is covered), `data` keeps the `.proto` field
+  names/nesting/enum names exactly, default-valued fields are never dropped, `data`
+  round-trips through `JsonFormat.parser()` back to the identical proto message, and
+  `service_error` is the only backend-defined event.
 - `MockMlAgentClientTest` — reactive scenario behavior via `StepVerifier` (incl.
-  `withVirtualTime` for delay-shaped scenarios — no `Thread.sleep`), including the
-  `trigger:rejected` scenario and the `payload`/`done.truncated` shape every success
-  path produces.
-- `ChatOrchestrationServiceTest` — retry classification (before/after first event, incl.
-  `MlAgentRejectedException` — both `NOT_FOUND` and the newer `ML_AGENT_REFUSED` code —
-  never retried), circuit breaker open, bulkhead rejection, total-deadline enforcement,
-  message-length rejection, and `history` forwarded to `MlAgentRequest` untouched
-  (defaulting to an empty list, never `null`, when omitted) — driven directly against
-  small resilience4j instances, no Spring context.
+  `withVirtualTime` for delay-shaped scenarios — no `Thread.sleep`): the success path
+  emits the real contract's `AnswerEvent`s (`tool_call`/`tool_result` trace, `chunk`s,
+  `payload`, `done`), `trigger:agent-error` emits the agent's own `error` event, and
+  `trigger:error`/`trigger:rejected` fail the `Flux` like a gRPC status would.
+- `ChatOrchestrationServiceTest` — every agent event forwarded in order with identical
+  name/data and nothing added or removed; the agent's `error` event forwarded as-is, not
+  retried, not turned into a `service_error`; retry classification (before/after first
+  event, `MlAgentRejectedException` never retried), circuit breaker open, bulkhead
+  rejection, total-deadline enforcement, message-length rejection, and `history`
+  forwarded to `MlAgentRequest` untouched — driven directly against small resilience4j
+  instances, no Spring context.
 - `GrpcMlAgentClientTest` — in-process gRPC server (the gRPC analog of MockWebServer):
   real request field mapping assertion (matches the ML Agent's proto contract,
-  including `history`'s translation into the `user`/`agent` oneof), all seven event
-  types including `tool_call`/`tool_result` being forwarded as domain events and `ping`
-  being consumed silently, the `payload` citation invariant, an unset-oneof event being
-  silently ignored rather than erroring (per the finalized contract), gRPC
-  `Status.Code` → exception mapping, and in-stream `error` event mapping — both the
-  non-retryable path (by `Error.Code`, incl. the new `ML_AGENT_REFUSED`) and the
-  `retryable` boolean driving `MlAgentCommunicationException` — against the new
-  transport.
+  including `history`'s translation into the `user`/`agent` oneof); every event type,
+  `ping` included, emitted as the **identical** proto message the server sent (deep
+  `equals`); `STATUS_UNSPECIFIED`/missing `row_count` not normalised; a `payload`
+  violating the citation invariant still forwarded; in-stream `error` events forwarded
+  rather than turned into exceptions; an unset-oneof event ignored per the contract;
+  gRPC `Status.Code` → exception mapping.
 - `ChatControllerTest` — full stack (`RestTestClient` against a real random port):
-  SSE ordering (incl. the `payload` event), validation, ML-failure-as-error-event,
-  correlation ID echo, a request carrying `history` streaming normally end-to-end, 404.
+  the raw SSE body carries the agent's event names and snake_case field names/nesting
+  and none of the former backend-owned names; event ordering; the agent's `error` event
+  on the wire untouched; transport failure as `service_error`; validation, correlation
+  ID echo, a request carrying `history` streaming normally, 404.
 
 ## Docker
 
@@ -454,9 +496,10 @@ itself has already changed once (`Chat`/`ChatRequest`/`ChatEvent` → `AskCaseMa
 `AskCaseManagerRequest`/`AnswerEvent`), without either `ChatOrchestrationService` or
 `ChatController` noticing. `GrpcMlAgentClient` speaks the ML Agent's `ChatAgent.
 AskCaseManager` RPC (`src/main/proto/{common,case_manager,chat_agent}.proto`, Thoughtful
-Labs' own finalized 3-file contract) — see the SSE event contract table above and
-`docs/ARCHITECTURE.md §2` for the full request/response shape, including the one
-payload invariant it validates (every key signal needs a citation).
+Labs' own finalized 3-file contract) — see the SSE event contract above and
+`docs/ARCHITECTURE.md §2` for the full request/response shape. Because the response is
+forwarded verbatim, a change to the ML Agent's response messages reaches the frontend
+automatically once the `.proto` files here are updated, with no Java mapping to change.
 
 ## Statelessness and horizontal scaling
 

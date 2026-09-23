@@ -2,7 +2,6 @@ package com.cmbotservice.mlagent;
 
 import com.cmbotservice.common.ErrorCode;
 import com.cmbotservice.common.MlAgentCommunicationException;
-import com.cmbotservice.common.MlAgentMalformedResponseException;
 import com.cmbotservice.common.MlAgentRejectedException;
 import com.cmbotservice.common.MlAgentUnavailableException;
 import com.cmbotservice.mlagent.grpc.v1.AgentRequestContext;
@@ -11,17 +10,11 @@ import com.cmbotservice.mlagent.grpc.v1.AnswerPayload;
 import com.cmbotservice.mlagent.grpc.v1.AskCaseManagerRequest;
 import com.cmbotservice.mlagent.grpc.v1.CaseManagerAnswerPayload;
 import com.cmbotservice.mlagent.grpc.v1.ChatAgentGrpc;
-import com.cmbotservice.mlagent.grpc.v1.Chunk;
 import com.cmbotservice.mlagent.grpc.v1.ConversationTurn;
-import com.cmbotservice.mlagent.grpc.v1.Done;
-import com.cmbotservice.mlagent.grpc.v1.Error;
-import com.cmbotservice.mlagent.grpc.v1.ToolCall;
 import com.cmbotservice.mlagent.grpc.v1.ToolResult;
 import io.grpc.Status;
 import io.grpc.stub.ClientCallStreamObserver;
 import io.grpc.stub.ClientResponseObserver;
-import java.util.List;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -29,21 +22,21 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.FluxSink;
-import reactor.core.publisher.Mono;
-import reactor.core.publisher.SynchronousSink;
 
 /**
  * Real {@link MlAgentClient} implementation: calls Thoughtful Labs' ML Agent over gRPC's
  * server-streaming {@code ChatAgent.AskCaseManager} RPC (see {@code
- * src/main/proto/chat_agent.proto}), translating its seven event types (<code>chunk</code>, <code>
- * tool_call</code>, <code>tool_result</code>, <code>payload</code>, <code>done</code>, <code>error
- * </code>, <code>ping</code>) into {@link MlAgentStreamEvent}. Never buffers the response — no
- * {@code collectList()}/{@code .block()}, just a straight {@code Flux}.
+ * src/main/proto/chat_agent.proto}) and relays its {@link AnswerEvent}s exactly as received — every
+ * event type (<code>chunk</code>, <code>tool_call</code>, <code>tool_result</code>, <code>payload
+ * </code>, <code>done</code>, <code>error</code>, <code>ping</code>) and every field, with no
+ * translation into a backend-owned model. Never buffers the response — no {@code
+ * collectList()}/{@code .block()}, just a straight {@code Flux}.
  *
- * <p>{@code tool_call}/{@code tool_result} are forwarded as {@link MlAgentStreamEvent.ToolCall}/
- * {@link MlAgentStreamEvent.ToolResult} domain events (also logged at debug, same as every other
- * event type) so the frontend can render the ML Agent's tool-use trace. {@code ping} is a pure
- * keepalive and remains logged only, never a domain event.
+ * <p>The only event ever withheld is one whose {@code event} oneof is unset — an arm this build's
+ * generated code doesn't know yet, or an empty message. Per the contract, "Clients MUST ignore
+ * events whose `event` oneof is unset or unrecognised and continue reading the stream", and there
+ * is nothing recognisable left in it to forward. Everything else is only <i>observed</i> here
+ * (debug/warn logging), never altered.
  *
  * <p>grpc-java's generated async stub is callback-based ({@code StreamObserver}), not {@code
  * Flux}-based — {@link #grpcEventFlux} bridges the two manually via {@code Flux.create} plus
@@ -71,16 +64,11 @@ public class GrpcMlAgentClient implements MlAgentClient {
   }
 
   @Override
-  public Flux<MlAgentStreamEvent> streamResponse(MlAgentRequest request) {
-    AtomicInteger lastSequence = new AtomicInteger(0);
+  public Flux<AnswerEvent> streamResponse(MlAgentRequest request) {
     AskCaseManagerRequest protoRequest = toProtoRequest(request);
-
-    Flux<MlAgentStreamEvent> events =
-        grpcEventFlux(protoRequest)
-            .<MlAgentStreamEvent>handle((event, sink) -> emit(event, lastSequence, sink))
-            .onErrorMap(io.grpc.StatusRuntimeException.class, this::mapStatus);
-
-    return Flux.concat(Mono.just(new MlAgentStreamEvent.Started()), events);
+    return grpcEventFlux(protoRequest)
+        .filter(GrpcMlAgentClient::isForwardable)
+        .onErrorMap(io.grpc.StatusRuntimeException.class, this::mapStatus);
   }
 
   /**
@@ -138,103 +126,58 @@ public class GrpcMlAgentClient implements MlAgentClient {
         FluxSink.OverflowStrategy.ERROR);
   }
 
-  private void emit(
-      AnswerEvent event, AtomicInteger lastSequence, SynchronousSink<MlAgentStreamEvent> sink) {
-    switch (event.getEventCase()) {
-      case CHUNK -> sink.next(toToken(event.getChunk(), lastSequence));
-      case TOOL_CALL -> sink.next(toToolCall(event.getToolCall()));
-      case TOOL_RESULT -> sink.next(toToolResult(event.getToolResult()));
-      case PAYLOAD -> sink.next(toPayload(event.getPayload()));
-      case DONE -> sink.next(toDone(event.getDone()));
-      case ERROR -> sink.error(toErrorException(event.getError()));
-      case PING -> log.trace("ML Agent ping received");
-      // Per the contract: "Clients MUST ignore events whose `event` oneof is
-      // unset or unrecognised and continue reading the stream" — no error, no
-      // domain event, just skip it.
-      case EVENT_NOT_SET ->
-          log.debug("ML Agent AnswerEvent had no event set; ignoring per contract");
-    }
-  }
-
-  private static MlAgentStreamEvent.Token toToken(Chunk chunk, AtomicInteger lastSequence) {
-    return new MlAgentStreamEvent.Token(chunk.getDelta(), lastSequence.incrementAndGet());
-  }
-
-  private static MlAgentStreamEvent.ToolCall toToolCall(ToolCall toolCall) {
-    log.debug("ML Agent tool_call id={} name={}", toolCall.getToolCallId(), toolCall.getName());
-    return new MlAgentStreamEvent.ToolCall(
-        toolCall.getToolCallId(), toolCall.getName(), toolCall.getArgsJson());
-  }
-
-  private static MlAgentStreamEvent.ToolResult toToolResult(ToolResult toolResult) {
-    log.debug(
-        "ML Agent tool_result id={} status={} ms={} rowCount={}",
-        toolResult.getToolCallId(),
-        toolResult.getStatus(),
-        toolResult.getMs(),
-        toolResult.hasRowCount() ? toolResult.getRowCount() : "n/a");
-    MlAgentStreamEvent.ToolResult.Status status =
-        toolResult.getStatus() == ToolResult.Status.STATUS_OK
-            ? MlAgentStreamEvent.ToolResult.Status.OK
-            : MlAgentStreamEvent.ToolResult.Status.FAILED;
-    Long rowCount = toolResult.hasRowCount() ? toolResult.getRowCount() : null;
-    return new MlAgentStreamEvent.ToolResult(
-        toolResult.getToolCallId(), status, toolResult.getMs(), rowCount);
-  }
-
-  private static MlAgentStreamEvent.Payload toPayload(AnswerPayload proto) {
-    if (proto.getPayloadCase() != AnswerPayload.PayloadCase.CASE_MANAGER_ANSWER_PAYLOAD) {
-      throw new MlAgentMalformedResponseException(
-          "ML Agent 'payload' event has no recognised payload set");
-    }
-    CaseSummaryPayload payload = toDomainPayload(proto.getCaseManagerAnswerPayload());
-    CaseSummaryPayloadValidator.validate(payload);
-    return new MlAgentStreamEvent.Payload(payload);
-  }
-
-  private static MlAgentStreamEvent.Done toDone(Done done) {
-    return new MlAgentStreamEvent.Done(
-        done.getLatencyMs(),
-        done.getTokensIn(),
-        done.getTokensOut(),
-        done.getStopReason() == Done.StopReason.STOP_REASON_TRUNCATED);
-  }
-
   /**
-   * Unlike the old contract's {@code error} event, this one carries no human-readable message field
-   * at all ("Debug detail is in server logs under request_id; nothing else travels here") — the
-   * message text here is this backend's own, chosen from the code, not anything the agent sent.
+   * Observes (logs) each event and decides only whether it is forwarded at all — never what it
+   * contains. The {@code payload} citation invariant ("a signal without a resolvable citation is a
+   * defect") is reported as a warning rather than failing the stream: rejecting the whole answer
+   * would be this backend overriding the ML Agent's response, and the contract already requires the
+   * UI to tolerate unresolvable citation ids.
    */
-  private static Throwable toErrorException(Error error) {
-    String message = messageFor(error.getCode());
-    // The contract now carries retryability explicitly as a boolean rather than
-    // implying it from the error code — this reuses ChatOrchestrationServiceImpl's
-    // existing type-based retry classification (MlAgentCommunicationException is
-    // retried, MlAgentRejectedException never is) instead of duplicating that
-    // decision here.
-    if (error.getRetryable()) {
-      return new MlAgentCommunicationException(message);
+  private static boolean isForwardable(AnswerEvent event) {
+    switch (event.getEventCase()) {
+      case TOOL_CALL ->
+          log.debug(
+              "ML Agent tool_call id={} name={}",
+              event.getToolCall().getToolCallId(),
+              event.getToolCall().getName());
+      case TOOL_RESULT -> {
+        ToolResult toolResult = event.getToolResult();
+        log.debug(
+            "ML Agent tool_result id={} status={} ms={} rowCount={}",
+            toolResult.getToolCallId(),
+            toolResult.getStatus(),
+            toolResult.getMs(),
+            toolResult.hasRowCount() ? toolResult.getRowCount() : "n/a");
+      }
+      case PAYLOAD -> warnOnPayloadContractViolations(event.getPayload());
+      case ERROR ->
+          log.debug(
+              "ML Agent error event code={} retryable={}",
+              event.getError().getCode(),
+              event.getError().getRetryable());
+      case PING -> log.trace("ML Agent ping received");
+      case CHUNK, DONE -> {
+        // Forwarded as-is; nothing worth logging per event.
+      }
+      case EVENT_NOT_SET -> {
+        log.debug("ML Agent AnswerEvent had no recognised event set; ignoring per contract");
+        return false;
+      }
     }
-    return new MlAgentRejectedException(mapErrorCode(error.getCode()), message);
+    return true;
   }
 
-  private static ErrorCode mapErrorCode(Error.Code code) {
-    return switch (code) {
-      case ERROR_CODE_MODEL_REFUSED -> ErrorCode.ML_AGENT_REFUSED;
-      case ERROR_CODE_DATA_UNAVAILABLE -> ErrorCode.ML_AGENT_ERROR;
-      // ERROR_CODE_INTERNAL, ERROR_CODE_UNSPECIFIED, and any future/unrecognised
-      // value all fall back to a plain internal error — "Clients MUST treat any
-      // unrecognised value as ERROR_CODE_INTERNAL" per the contract.
-      default -> ErrorCode.INTERNAL_ERROR;
-    };
-  }
-
-  private static String messageFor(Error.Code code) {
-    return switch (code) {
-      case ERROR_CODE_MODEL_REFUSED -> "The ML Agent refused to process the request";
-      case ERROR_CODE_DATA_UNAVAILABLE -> "The ML Agent's data source was unavailable";
-      default -> "The ML Agent reported an internal error";
-    };
+  private static void warnOnPayloadContractViolations(AnswerPayload payload) {
+    if (payload.getPayloadCase() != AnswerPayload.PayloadCase.CASE_MANAGER_ANSWER_PAYLOAD) {
+      log.warn("ML Agent 'payload' event has no recognised payload arm set; forwarding as-is");
+      return;
+    }
+    for (CaseManagerAnswerPayload.KeySignal signal :
+        payload.getCaseManagerAnswerPayload().getKeySignalsList()) {
+      if (signal.getCitationsCount() == 0) {
+        log.warn("ML Agent 'payload' key signal is missing a required citation; forwarding as-is");
+      }
+    }
   }
 
   /**
@@ -305,23 +248,5 @@ public class GrpcMlAgentClient implements MlAgentClient {
       builder.setAgent(ConversationTurn.AgentTurn.newBuilder().setText(turn.content()));
     }
     return builder.build();
-  }
-
-  private static CaseSummaryPayload toDomainPayload(CaseManagerAnswerPayload proto) {
-    List<CaseSummaryPayload.KeySignal> keySignals =
-        proto.getKeySignalsList().stream()
-            .map(
-                s ->
-                    new CaseSummaryPayload.KeySignal(
-                        s.getSignal(), List.copyOf(s.getCitationsList())))
-            .toList();
-    List<CaseSummaryPayload.Citation> citations =
-        proto.getCitationsList().stream()
-            .map(
-                c ->
-                    new CaseSummaryPayload.Citation(
-                        c.getId(), c.getSource(), List.copyOf(c.getFieldsList())))
-            .toList();
-    return new CaseSummaryPayload(keySignals, citations);
   }
 }

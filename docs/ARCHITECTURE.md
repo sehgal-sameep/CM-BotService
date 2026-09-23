@@ -80,12 +80,15 @@ ChatOrchestrationService (fully reactive — no thread, no blocking call, anywhe
        .timeout(firstResponseTimeout, evt -> idleTimeout)
        .retryWhen(backoff, filtered to retryable-and-nothing-streamed-yet)
        .transform(withTotalDeadline)
-   → maps each MlAgentStreamEvent → ChatSseEvent → ServerSentEvent
-   → onErrorResume: any failure past this point becomes an `error` event, not an HTTP status
+   → relays each AnswerEvent verbatim → ServerSentEvent (event: oneof field name,
+   │   data: canonical proto3 JSON, original field names — see SseEvents); no mapping
+   → onErrorResume: a failure with no agent event of its own becomes a `service_error`
+     event, not an HTTP status (the agent's own `error` event is just forwarded)
    ▼
 MockMlAgentClient / GrpcMlAgentClient (impl of MlAgentClient)
-   → streams Started → Token* → Payload? → Done — no identifier is ever revealed;
-     resending `history` on the next request is the caller's only resumption mechanism
+   → streams the agent's own AnswerEvents (chunk/tool_call/tool_result/payload/done/
+   │   error/ping) as received — no identifier is ever revealed; resending `history` on
+   │   the next request is the caller's only resumption mechanism
    → (real client) never buffers the full response — a straight Flux, gRPC → Netty
 ```
 
@@ -94,9 +97,8 @@ finalized contract:** an early integration pass assumed the ML Agent would assig
 conversation identifier and hand it back early in the stream. It doesn't — and
 Thoughtful Labs' now-finalized contract confirms there is no such identifier
 *anywhere*, not even on the terminal event: resumption is *only* ever "resend the
-full `history` transcript," full stop. `MlAgentStreamEvent.Started` carries no fields
-at all, and neither `Started` nor `Done` reveal anything to echo — `StreamStartEvent`
-and `StreamCompleteEvent` carry only `messageId`/timing fields. This finding predates
+full `history` transcript," full stop. Nothing in `done` (or any other event) carries
+anything to echo. This finding predates
 and is independent of the HTTP→gRPC transport swap — it's a property of the ML
 Agent's own contract, not of either transport.
 
@@ -159,18 +161,20 @@ Seven event types (`AnswerEvent`), an unset or unrecognised `event` oneof arm MU
 | Event | Payload | Cardinality |
 |---|---|---|
 | `chunk` | `{ delta }` | many — streaming answer text |
-| `tool_call` | `{ tool_call_id, name, args_json }` | 0..n — forwarded to the frontend as `tool-call` (§5 outbound contract below) |
-| `tool_result` | `{ tool_call_id, status, ms, row_count? }` | one per `tool_call` — forwarded as `tool-result` |
+| `tool_call` | `{ tool_call_id, name, args_json }` | 0..n |
+| `tool_result` | `{ tool_call_id, status, ms, row_count? }` | one per `tool_call` |
 | `payload` | structured Case Manager analysis (below), wrapped in a module-union `AnswerPayload` oneof | at most one, before `done` |
 | `done` | `{ stop_reason, latency_ms, tokens_in, tokens_out }` | one, terminal |
 | `error` | `{ code, retryable }` | terminal |
 | `ping` | (empty) | 0..n — pure transport keepalive |
 
+Every one of these is forwarded to the frontend unchanged (§5).
+
 `payload` (`CaseManagerAnswerPayload`, the Case Manager module's payload arm):
 
 ```json
 {
-  "keySignals": [{ "signal": "...", "citations": ["7ff7-..._TRX"] }],
+  "key_signals": [{ "signal": "...", "citations": ["7ff7-..._TRX"] }],
   "citations": [{ "id": "7ff7-..._TRX", "source": "AgenticGetCase.events[].decision", "fields": ["ri..."] }]
 }
 ```
@@ -179,16 +183,16 @@ This is deliberately much smaller than the earlier contract's `payload` — no
 top-level `answer`, no `summary.narrative`/`entities`/`timeline`, no
 `suggestedResolution` at all. It's an overlay of structured signals/citations on top
 of the answer text (which arrives via `chunk` events), not a duplicate of the answer
-itself. One invariant `GrpcMlAgentClient` still enforces rather than trusts blindly
-(§16): every `keySignal` must carry ≥1 citation ("a signal without a resolvable
-citation is a defect, not a soft failure"). The whole `suggestedResolution`/
+itself. The contract's one invariant — every `key_signal` carries ≥1 citation ("a
+signal without a resolvable citation is a defect, not a soft failure") — is now only
+*observed* by `GrpcMlAgentClient` (a WARN log, §16), not enforced: the payload is
+forwarded as-is either way. The whole `suggestedResolution`/
 resolution-mark validation this doc previously described no longer applies — there is
 no such field to validate.
 
-`done`'s `stop_reason` (`STOP_REASON_COMPLETED` / `STOP_REASON_TRUNCATED`) is the only
-new signal carried forward here: this backend collapses it to a single
-`truncated` boolean on `MlAgentStreamEvent.Done`/`StreamCompleteEvent` rather than
-leaking the agent's own enum to the frontend.
+`done`'s `stop_reason` (`STOP_REASON_COMPLETED` / `STOP_REASON_TRUNCATED`) reaches the
+frontend as the agent's own enum value; this backend no longer collapses it into a
+boolean of its own.
 
 Errors — a 3-value `Error.Code` enum plus an explicit `retryable` boolean, used either
 as the gRPC status of the initial `AskCaseManager` call (pre-stream — mapped from the
@@ -203,17 +207,14 @@ closest-matching `Status.Code`, since gRPC has no literal "401") or as the termi
 | `ERROR_CODE_UNSPECIFIED` / unrecognised | Treated as `ERROR_CODE_INTERNAL` per the contract | per the `retryable` field |
 
 This is a real simplification from the old contract's ten string codes
-(401/403/404/422/429/503/4221/4222): retryability is now an explicit field on the
-event rather than something inferred from which code arrived, so
-`GrpcMlAgentClient#toErrorException` reuses exactly that boolean — `retryable: true`
-→ `MlAgentCommunicationException` (retried), `retryable: false` →
-`MlAgentRejectedException` (never retried), regardless of which `Error.Code` came
-with it. `ERROR_CODE_MODEL_REFUSED` maps to the new `ErrorCode.ML_AGENT_REFUSED`; the
-old `CONTINUATION_EXPIRED` code/exception no longer exist — there is no continuation
-concept left to expire. Unlike the old contract, `Error` carries **no message field
-at all** ("Debug detail is in server logs under request_id; nothing else travels
-here") — the `errorMessage` text the frontend eventually sees is chosen by this
-backend from the code, never forwarded from the agent.
+(401/403/404/422/429/503/4221/4222). In-stream, the `error` event is **forwarded to the
+frontend as-is** — `code` and `retryable` exactly as the agent sent them — rather than
+converted into an exception and re-expressed as a backend `errorCode`, so the old
+`ErrorCode.ML_AGENT_REFUSED` translation no longer exists. `ChatOrchestrationServiceImpl`
+only observes it (an `ML_AGENT_ERROR_EVENT` WARN log, and the stream counted as
+`ml.requests.total{result=failed}`). Pre-stream, the gRPC `Status.Code` is still mapped to
+`MlAgentRejectedException`/`MlAgentCommunicationException`/`MlAgentUnavailableException`,
+since a status has no agent event to forward; those surface as `service_error` (§5).
 
 **Cancellation:** a client disconnect cancels the subscription; Reactor propagates
 that cancellation upstream through every operator automatically (`.timeout()`'s
@@ -271,76 +272,82 @@ checks are the only things that can produce a non-200 HTTP status.** A missing/b
 returns its `Flux`, Spring commits the response at 200/`text/event-stream` as soon as
 it starts writing — there is no way to change the status after that. So every failure that can
 occur once the ML Agent call has actually begun (timeout, circuit-breaker-open,
-bulkhead-full, retry-exhausted, malformed response) is deliberately funneled through
-one `.onErrorResume(...)` into an `error` SSE event instead, on the same stream, with
-the same shape as a normal completion. This is documented explicitly on the
+bulkhead-full, retry-exhausted, transport failure) is deliberately funneled through
+one `.onErrorResume(...)` into a `service_error` SSE event instead, on the same stream.
+The ML Agent's own model-level `error` event never takes this path — it is an ordinary
+stream element, forwarded as-is. This is documented explicitly on the
 `@Operation` Swagger annotation so a frontend integrator doesn't go looking for a 503.
 
 ## 5. SSE Event Contract
 
-`Content-Type: text/event-stream`. Each event has an `id:` (sequence number, assigned
-uniformly across all seven types via one `Flux#index()` over the fully-assembled event
-stream — see [`SseEvents`](../src/main/java/com/cmbotservice/sse/SseEvents.java)),
-`event:` (type), and `data:` (JSON):
+**The ML Agent's response is forwarded to the frontend as-is — this backend is a
+transparent proxy for the response contract.** There is no backend-owned response
+schema: no renamed events, no renamed fields, no reshaped payloads, no wrapper. An
+earlier revision translated every event into its own DTOs (`stream-start`, `message`,
+`tool-call`, `tool-result`, `payload`, `stream-complete`, with camelCase fields plus
+`messageId`/`timestamp`/`sequence`/`totalChunks`); that translation layer was removed
+so the frontend consumes Thoughtful Labs' contract directly, and a change to the
+agent's response messages needs only a `.proto` update here, no Java mapping.
 
-| Event | Payload |
+`Content-Type: text/event-stream`. For each `AnswerEvent`
+([`SseEvents`](../src/main/java/com/cmbotservice/sse/SseEvents.java)):
+
+| SSE field | Value |
 |---|---|
-| `stream-start` | `{ messageId, timestamp }` |
-| `message` (0+) | `{ messageId, sequence, content, timestamp }` — the ML Agent's `chunk`/`delta`, translated |
-| `tool-call` (0+, any point in the stream) | `{ messageId, toolCallId, name, argsJson, timestamp }` — the ML Agent's `tool_call`, translated directly |
-| `tool-result` (0+, one per `tool-call`) | `{ messageId, toolCallId, status, ms, rowCount, timestamp }` — the ML Agent's `tool_result`, translated; `status` is `OK`/`FAILED` (unrecognised values fold to `FAILED`), `rowCount` is `null` unless the agent's `result_summary` oneof carried one |
-| `payload` (at most 1, before `stream-complete`) | `{ messageId, payload, timestamp }` — the ML Agent's structured `payload` event, translated directly (`keySignals`/`citations` only) |
-| `stream-complete` | `{ messageId, totalChunks, truncated, timestamp }` — `truncated` collapses the agent's `stop_reason`; no identifier of any kind is ever revealed |
-| `error` | `{ messageId, errorCode, errorMessage, timestamp }` |
+| `event:` | the name of the `AnswerEvent` oneof field that is set — `chunk`, `tool_call`, `tool_result`, `payload`, `done`, `error`, `ping` — read from the protobuf descriptor (`findFieldByNumber(eventCase.getNumber()).getName()`), never a hand-written mapping |
+| `data:` | the whole `AnswerEvent`, rendered by `JsonFormat.printer().preservingProtoFieldNames().alwaysPrintFieldsWithNoPresence().omittingInsignificantWhitespace()`: original `.proto` field names and nesting (`{"payload":{"case_manager_answer_payload":{"key_signals":[...]}}}`), enums as proto names, default-valued fields still printed (oneof members such as `row_count` only when set). Per the proto3 JSON mapping, `int64` fields are JSON strings. Handed to Spring as a pre-rendered `String`, which its SSE writer emits without a second JSON encoding |
+| `id:` | a 0-based frame counter, assigned once via `Flux#index()` — SSE transport metadata, the only thing this backend adds to an agent event |
 
-Exactly one of `stream-complete`/`error` terminates every stream. The seven payload
-records implement a sealed
-[`ChatSseEvent`](../src/main/java/com/cmbotservice/sse/ChatSseEvent.java) interface —
-a genuine Java 21 win here: the switch that builds the outbound `ServerSentEvent` is
-compiler-checked exhaustive, with no `default` branch to silently swallow a future
-eighth variant. `errorCode` is one of `ML_AGENT_TIMEOUT`, `ML_AGENT_UNAVAILABLE`,
-`ML_AGENT_ERROR`, `ML_AGENT_REFUSED` (the agent's `ERROR_CODE_MODEL_REFUSED` — it
-understood the request and declined it), `CONCURRENCY_LIMIT_REACHED` (bulkhead full
-*or* circuit open — both reject near-instantly and mean the same thing to a client:
-try later), `NOT_FOUND`/`VALIDATION_ERROR`/`INTERNAL_ERROR` (from an explicit
-`MlAgentRejectedException`). `errorMessage` is always a fixed, generic, client-safe
-string, chosen by this backend — never an exception message, stack trace, gRPC/
-hostname detail, or (since the finalized contract's `Error` carries no message field
-at all) anything forwarded verbatim from the agent.
+The canonical proto3 JSON mapping was chosen over a hand-rolled serializer because it
+is lossless (the `data:` round-trips through `JsonFormat.parser()` to an identical
+message — pinned by `SseEventsTest`) and is what any other protobuf consumer would
+produce for the same message.
 
-The ML Agent's own `tool_call`/`tool_result` events are now forwarded as the
-`tool-call`/`tool-result` domain events/SSE events above (also logged at DEBUG by
-`GrpcMlAgentClient`) — case managers can see what the agent did to produce an answer,
-rather than that trace being dropped. `ping` remains consumed and logged (TRACE) by
-`GrpcMlAgentClient`/`MockMlAgentClient` directly and **never** becomes a domain event —
-it's a pure transport keepalive with no content to relay.
+Forwarded: every event type, including `ping` (keeps intermediaries from idling the
+SSE connection, and resets the idle timeout, §8) and the agent's `error`. Withheld: only
+an `AnswerEvent` with its `event` oneof unset — per the contract, clients MUST ignore it,
+and there is nothing recognisable to forward (unknown fields are not representable in
+proto3 JSON without the schema).
+
+**The one backend-defined event: `service_error`**
+([`ServiceErrorEvent`](../src/main/java/com/cmbotservice/sse/ServiceErrorEvent.java)) —
+`{ messageId, errorCode, errorMessage, timestamp }`, terminal — exists only because some
+failures produce no agent event at all, after the response has already committed at 200:
+the agent could not be reached, timed out, rejected the call with a gRPC status, or this
+backend's circuit breaker/bulkhead/message-length check stopped the request. It
+deliberately uses a name the agent never uses, so a frontend never confuses it with the
+agent's `error` (a different payload). `errorCode` is one of `ML_AGENT_TIMEOUT`,
+`ML_AGENT_UNAVAILABLE`, `ML_AGENT_ERROR`, `CONCURRENCY_LIMIT_REACHED` (bulkhead full
+*or* circuit open), `NOT_FOUND`/`VALIDATION_ERROR`/`INTERNAL_ERROR`. `errorMessage` is
+always a fixed, generic, client-safe string — never an exception message, stack trace,
+or gRPC/hostname detail.
+
+Every stream ends with exactly one of `done`, `error`, or `service_error`.
 
 ## 6. `MlAgentClient` — the reactive contract
 
 ```java
 public interface MlAgentClient {
-    Flux<MlAgentStreamEvent> streamResponse(MlAgentRequest request);
+    Flux<AnswerEvent> streamResponse(MlAgentRequest request);
 }
 ```
 
-`MlAgentStreamEvent` is a **sealed interface** — `Started()` (no fields; the agent
-reveals nothing at start), `Token(delta, sequence)`, `ToolCall(toolCallId, name,
-argsJson)`, `ToolResult(toolCallId, status, ms, rowCount)`, `Payload(CaseSummaryPayload)`,
-`Done(latencyMs, tokensIn, tokensOut, truncated)`. Errors are deliberately **not** a
-variant here — they flow through the `Flux`'s native error channel, which is what
-lets `.timeout()`, `.retryWhen()`, and the resilience4j operators compose
-declaratively in `ChatOrchestrationService` instead of a hand-rolled state machine
-(the old callback-interface design this replaced needed exactly that). `ping` is
-consumed and logged directly by each `MlAgentClient` implementation and never becomes
-a variant at all (§5).
+The element type is the ML Agent's own generated `AnswerEvent` — there is no
+backend-owned response domain model (the former sealed `MlAgentStreamEvent` and
+`CaseSummaryPayload` existed only to rename/reshape it and were removed). Transport
+failures still flow through the `Flux`'s native error channel as `MlAgentException`
+subtypes, which is what lets `.timeout()`, `.retryWhen()`, and the resilience4j
+operators compose declaratively in `ChatOrchestrationService`; the agent's model-level
+`error` is an ordinary element.
 
 **`MockMlAgentClient`** — no threads, no polling loops, nothing that could leak:
-`Flux.concat(Mono.just(Started), tokens.delayElements(delay).index(...), Mono.just(Payload(...)), Mono.just(Done(...)))`
-for success/slow (the mock fabricates a `CaseSummaryPayload` satisfying
-`GrpcMlAgentClient`'s citation validation, so this path is exercisable without a real
-agent); `Flux.error(...)` after `Started` for `trigger:error`/`trigger:rejected`;
-`Flux.just(Started, Done(0, 0, 0, false))` for empty; `Flux.concat(Mono.just(Started),
-Mono.never())` for timeout — the orchestrator's own timeout operator is what ends
+emits the real contract's messages — `Flux.concat(toolTrace, chunks.delayElements(delay),
+Mono.just(payload), Mono.just(done))` for success/slow (a `tool_call`/`tool_result`
+pair, `chunk`s, a `payload` with a citation on every key signal, then `done`), so mock
+mode puts the exact production wire format on the stream; `Flux.error(...)` for
+`trigger:error`/`trigger:rejected` (a transport failure, as a gRPC status would be);
+a single agent `error` event for `trigger:agent-error`; `Flux.just(done)` for empty;
+`Flux.never()` for timeout — the orchestrator's own timeout operator is what ends
 that one, not the mock. `delayElements` natively respects cancellation, so a
 disconnect mid-slow-stream stops everything downstream for free. Entirely
 transport-agnostic — this class never changed across either transport swap
@@ -364,16 +371,14 @@ it *after* the `stub.askCaseManager(...)` call returns (which is exactly when
 `start()` has finished) — see `GrpcMlAgentClient#grpcEventFlux`.
 
 Never buffers the full response (no `collectList()`/`.block()` anywhere — proven by
-the in-process gRPC tests, not just claimed), and validates every `payload` element
-via [`CaseSummaryPayloadValidator`](../src/main/java/com/cmbotservice/mlagent/CaseSummaryPayloadValidator.java)
-(§16, extracted into its own class since it's pure domain-object validation with
-nothing transport-specific about it) before it becomes a domain event. Translates the
-`Error.Code`/`retryable` pair (§2) into `MlAgentRejectedException`/
-`MlAgentCommunicationException` both pre-stream (the initial call's gRPC
-`Status.Code`) and in-stream (the terminal `error` event: `retryable` picks the
-exception type, `code` picks `MlAgentRejectedException`'s `ErrorCode` when non-retryable —
-`MlAgentContinuationExpiredException` no longer exists, there being nothing left to
-expire).
+the in-process gRPC tests, not just claimed), and emits each `AnswerEvent` it
+receives unchanged — the tests assert deep `equals` between what the in-process server
+sent and what the client emitted. The only per-event work is observation (DEBUG/TRACE
+logs of tool calls/results/pings, a WARN on a `payload` violating the citation
+invariant, §16) plus filtering out unset-oneof events. The initial call's gRPC
+`Status.Code` is still translated into `MlAgentRejectedException`/
+`MlAgentCommunicationException`/`MlAgentUnavailableException`, since a status is not an
+agent event and has nothing to forward.
 
 **No client-side gRPC deadline is set.** `ChatOrchestrationService`'s existing
 first-response/idle `.timeout()` operator (§8) remains the one, client-agnostic
@@ -471,7 +476,7 @@ operators, on every attempt):
 
 ```java
 mlAgentClient.streamResponse(mlRequest)
-    .doOnNext(evt -> firstEventSeen.set(true))          // must run before retryWhen
+    .doOnNext(evt -> { firstEventSeen.set(true); ... })  // must run before retryWhen
     .transformDeferred(CircuitBreakerOperator.of(cb))
     .transformDeferred(BulkheadOperator.of(bulkhead))
     .timeout(Mono.delay(firstResponseTimeout), evt -> Mono.delay(idleTimeout))
@@ -491,14 +496,19 @@ exponential backoff + jitter) rather than resilience4j's retry module — resili
 rule that actually matters here: never retry once partial content has already
 streamed to the frontend. Tracking it via a plain `AtomicBoolean` set in `doOnNext`,
 checked in the retry filter, is simpler than forcing a second retry framework to do
-something it isn't shaped for.
+something it isn't shaped for. "First event" means the first real `AnswerEvent` from the
+agent: both clients used to emit a synthetic `Started` marker before the gRPC call had
+even returned anything, which set this flag immediately and meant a pre-first-event
+failure was in practice never retried. With that marker removed (it only existed to
+produce the backend's own `stream-start` event), the retry now engages exactly as
+designed. One consequence: every failed attempt counts toward the circuit breaker, so
+a run of unreachable-agent failures opens it faster than before.
 
 `isRetryable(Throwable)`: `MlAgentUnavailableException` (connection-level) and
-`MlAgentCommunicationException` (reached the agent, got told something transient went
-wrong — its `retryable: true` in-stream, or a transient gRPC status pre-stream) →
-retryable. `MlAgentMalformedResponseException`, `MlAgentTimeoutException`,
-`MlAgentRejectedException` (the agent explicitly said no — either a non-retryable
-in-stream `error`, or a pre-stream rejection status), `BulkheadFullException`,
+`MlAgentCommunicationException` (a transient gRPC status such as `RESOURCE_EXHAUSTED`/
+`INTERNAL`) → retryable. The agent's own in-stream `error` event is never retried by
+this backend — it is forwarded, and its `retryable` flag is the frontend's to act on. `MlAgentMalformedResponseException`, `MlAgentTimeoutException`,
+`MlAgentRejectedException` (a pre-stream rejection status), `BulkheadFullException`,
 `CallNotPermittedException` → not retryable. Timeout is
 deliberately non-retryable by default — retrying an agent that's already timing out
 compounds load exactly when the circuit breaker should be doing the protecting
@@ -518,7 +528,7 @@ around it.
 
 Bulkhead-full and circuit-open reject essentially instantly (a synchronous check at
 subscription time) — verified live: forcing the breaker open via repeated
-`trigger:error`, the very next request gets an immediate `error` event
+`trigger:error`, the very next request gets an immediate `service_error` event
 (`CONCURRENCY_LIMIT_REACHED`) with the mock never actually invoked again, and
 `/actuator/health/readiness` stays UP throughout (§14).
 
@@ -640,7 +650,7 @@ bridge for an existing one).
 excludes the circuit-breaker health indicator from the readiness group — verified
 live: forcing the "mlAgent" circuit breaker OPEN leaves `/actuator/health/readiness`
 reporting UP throughout. A downstream ML Agent outage is handled through the circuit
-breaker, `error` events, and metrics — not by removing an otherwise-healthy instance
+breaker, `service_error` events, and metrics — not by removing an otherwise-healthy instance
 from rotation. The indicator still contributes to the plain `/actuator/health`
 aggregate, which is useful signal there.
 
@@ -670,29 +680,26 @@ response buffering — two different knobs for two different directions. No spec
 to the request contract just to have size-limit annotations to attach to it — nothing
 in the current contract needs one.
 
-DTO boundary: `ChatRequest` (frontend) → `MlAgentRequest` (ML Agent, built explicitly
-by `ChatOrchestrationServiceImpl`, never the same object) → `MlAgentStreamEvent` (ML
-Agent's response shape) → `ChatSseEvent`/`ServerSentEvent` (frontend again). Four
-distinct types, one deliberate mapping step at each boundary — the frontend is never
-exposed to the ML Agent's contract directly, so ML Agent contract changes are
-absorbed here, not propagated.
+DTO boundary: the **request** side is still mapped — `ChatRequest` (frontend) →
+`MlAgentRequest` (built explicitly by `ChatOrchestrationServiceImpl`) →
+`AskCaseManagerRequest` (the proto, built by `GrpcMlAgentClient`). The **response** side
+deliberately is not: the agent's `AnswerEvent` goes straight to a `ServerSentEvent`,
+so the frontend consumes the ML Agent's response contract directly and its changes
+propagate to the frontend by design (§5).
 
 ## 16. ML Agent Response Validation
 
-`GrpcMlAgentClient` validates every decoded `AnswerEvent`. Unlike the earlier
-contract, an unset (or unrecognised) `event` oneof case is **not** treated as
-malformed — the finalized contract explicitly states "clients MUST ignore events
-whose `event` oneof is unset or unrecognised and continue reading the stream," so
-this backend does exactly that (logged at DEBUG, no domain event, stream continues)
-rather than erroring, a deliberate behavior change from the prior contract revision.
-One contract-specific invariant is enforced on every `payload` event before it
-becomes a domain event (§2), via the shared
-[`CaseSummaryPayloadValidator`](../src/main/java/com/cmbotservice/mlagent/CaseSummaryPayloadValidator.java):
-every `keySignal` must carry at least one citation — the only invariant that survives
-from the earlier contract, since `suggestedResolution`/its resolution-mark validation
-no longer exists at all in the finalized `CaseManagerAnswerPayload`. The violation
-becomes `MlAgentMalformedResponseException` — proven by dedicated in-process gRPC
-server tests, not just asserted.
+This backend no longer judges the content of the agent's events; it forwards them.
+An unset (or unrecognised) `event` oneof case is ignored per the contract ("clients
+MUST ignore events whose `event` oneof is unset or unrecognised and continue reading
+the stream" — logged at DEBUG, stream continues). The contract's `payload` invariant
+(every `key_signal` carries ≥1 citation) and a `payload` with no recognised arm are
+reported as WARN logs by `GrpcMlAgentClient` but the event is still forwarded as-is —
+rejecting the whole answer would be this backend overriding the agent's response, and
+the contract already requires clients to tolerate unresolvable citation ids. (This
+used to fail the stream via `CaseSummaryPayloadValidator`, since removed.)
+`MlAgentMalformedResponseException` now covers only an event that cannot be rendered
+as JSON at all.
 
 ## 17. Security Hardening (code-level; no gateway/infra here)
 
@@ -745,14 +752,13 @@ com.cmbotservice
  │   └─ advice/      GlobalExceptionHandler
  ├─ service/    ChatOrchestrationService (interface), ChatOrchestrationServiceImpl,
  │               ChatMetrics
- ├─ mlagent/    MlAgentClient, MlAgentRequest, MlAgentStreamEvent, CaseSummaryPayload,
- │               CaseSummaryPayloadValidator, MockMlAgentClient, MockScenario,
+ ├─ mlagent/    MlAgentClient, MlAgentRequest, MockMlAgentClient, MockScenario,
  │               GrpcMlAgentClient, grpc.v1/ (generated: ChatAgentGrpc,
  │               AskCaseManagerRequest, AnswerEvent, AnswerPayload,
  │               CaseManagerAnswerPayload, AgentRequestContext, ConversationTurn,
  │               Chunk, ToolCall, ToolResult, Done, Error, Ping)
- ├─ sse/        ChatSseEvent, SseEventType, SseEvents, StreamStartEvent,
- │               MessageChunkEvent, CaseSummaryEvent, StreamCompleteEvent, StreamErrorEvent
+ ├─ sse/        SseEvents (AnswerEvent → SSE, verbatim), SseEventType,
+ │               ServiceErrorEvent
  └─ common/     ErrorCode, MlAgentException, MlAgentTimeoutException,
                  MlAgentUnavailableException, MlAgentCommunicationException,
                  MlAgentMalformedResponseException, MlAgentRejectedException,
@@ -892,17 +898,18 @@ forgotten.
 
 ## Verified end-to-end
 
-Full test suite (71 tests: unit, `StepVerifier`/virtual-time, an in-process gRPC
+Full test suite (82 tests: unit, `StepVerifier`/virtual-time, an in-process gRPC
 server (the gRPC analog of MockWebServer), a mocked Redis template
 (`JsonBlobSessionStoreTest`), and `RestTestClient` against a real random port —
 including a dedicated `ChatControllerAuthenticationTest` for `mode: BFF_SESSION`
 alongside the default-mode `ChatControllerTest`) green, including the ML Agent
 contract's request field mapping over gRPC (`history` translated into the `user`/
-`agent` oneof), all seven event types (`tool_call`/`tool_result` forwarded as domain
-events, `ping` consumed silently), the `payload` citation invariant, an unset-`oneof` event silently ignored
-per the finalized contract (rather than malformed), gRPC `Status.Code` → exception
-mapping, in-stream `error`/`retryable` mapping (including the new `ML_AGENT_REFUSED`
-code), and `history` forwarded untouched (defaulting to an empty list, never `null`,
+`agent` oneof), all seven event types forwarded as the identical proto message and
+rendered as SSE with the agent's own event names and field names (`SseEventsTest`
+round-trips every one back through `JsonFormat.parser()`), the agent's `error` event
+and a citation-less `payload` forwarded untouched, an unset-`oneof` event ignored
+per the finalized contract, gRPC `Status.Code` → exception → `service_error` mapping,
+and `history` forwarded untouched (defaulting to an empty list, never `null`,
 when omitted), and every authentication rejection path (§20) plus its success path
 and both Redis-failure modes. Live curl verification: success/slow/error/empty/
 rejected scenarios; blank/missing-field validation → 400 (including a missing

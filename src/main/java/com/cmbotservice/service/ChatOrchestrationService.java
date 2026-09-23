@@ -17,9 +17,11 @@ public interface ChatOrchestrationService {
 
   /**
    * Streams the ML Agent's response to one chat message as a cold {@code Flux}: nothing happens
-   * until subscribed, and every failure — before or after the response has started streaming —
-   * surfaces as an {@code error} SSE event on this same stream rather than a distinct HTTP status,
-   * since the response is already committed at 200 by the time Spring starts writing elements.
+   * until subscribed. Each ML Agent event is relayed as-is (its own event name and payload); a
+   * failure that produced no agent event of its own — before or after the response has started
+   * streaming — surfaces as a {@code service_error} SSE event on this same stream rather than a
+   * distinct HTTP status, since the response is already committed at 200 by the time Spring starts
+   * writing elements.
    */
   Flux<ServerSentEvent<Object>> streamMessage(RequestContext context, ChatRequest request);
 }

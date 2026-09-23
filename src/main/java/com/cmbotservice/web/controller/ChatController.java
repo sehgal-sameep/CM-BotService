@@ -8,6 +8,7 @@ import com.cmbotservice.web.dto.ChatRequest;
 import com.cmbotservice.web.dto.ErrorResponse;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.ExampleObject;
 import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -22,10 +23,10 @@ import reactor.core.publisher.Flux;
 
 /**
  * The one endpoint this stateless orchestrator exposes: forward a chat message to the ML Agent and
- * stream its response back over SSE. There is no conversation resource here to create, fetch, or
- * close — see {@link ChatRequest} and the SSE contract documented on {@link #sendMessage}. Fully
- * non-blocking: the returned {@code Flux} is subscribed and written by Reactor Netty as elements
- * arrive, never buffered.
+ * stream its response back over SSE, event for event, untranslated. There is no conversation
+ * resource here to create, fetch, or close — see {@link ChatRequest} and the SSE contract
+ * documented on {@link #sendMessage}. Fully non-blocking: the returned {@code Flux} is subscribed
+ * and written by Reactor Netty as elements arrive, never buffered.
  */
 @RestController
 @Tag(
@@ -33,9 +34,50 @@ import reactor.core.publisher.Flux;
     description =
         "Stateless chat message orchestration — forwards each message to the "
             + "ML Agent (through a circuit breaker, bulkhead, timeout, and limited retry) and streams its "
-            + "response over SSE. This backend holds no conversation state between requests; conversation "
+            + "response events back over SSE exactly as the ML Agent sent them. This backend holds no conversation state between requests; conversation "
             + "memory (if any) is owned by the ML Agent.")
 public class ChatController {
+
+  static final String SSE_EXAMPLE_SUCCESS =
+      """
+      id:0
+      event:tool_call
+      data:{"tool_call":{"tool_call_id":"t-1","name":"getCase","args_json":"{\\"caseId\\":\\"case-1001\\"}"}}
+
+      id:1
+      event:tool_result
+      data:{"tool_result":{"tool_call_id":"t-1","status":"STATUS_OK","ms":"42","row_count":"7"}}
+
+      id:2
+      event:chunk
+      data:{"chunk":{"delta":"This case was created because the transaction triggered multiple fraud indicators."}}
+
+      id:3
+      event:ping
+      data:{"ping":{}}
+
+      id:4
+      event:payload
+      data:{"payload":{"case_manager_answer_payload":{"key_signals":[{"signal":"Unusual device/IP","citations":["evt-123"]}],"citations":[{"id":"evt-123","source":"getCase","fields":["risk_score"]}]}}}
+
+      id:5
+      event:done
+      data:{"done":{"stop_reason":"STOP_REASON_COMPLETED","latency_ms":"1800","tokens_in":"12","tokens_out":"140"}}
+      """;
+
+  static final String SSE_EXAMPLE_AGENT_ERROR =
+      """
+      id:0
+      event:error
+      data:{"error":{"code":"ERROR_CODE_DATA_UNAVAILABLE","retryable":true}}
+      """;
+
+  static final String SSE_EXAMPLE_SERVICE_ERROR =
+      """
+      id:0
+      event:service_error
+      data:{"messageId":"5b1e...","errorCode":"ML_AGENT_TIMEOUT","errorMessage":"The AI agent did not respond in time.","timestamp":"2026-09-23T10:15:30Z"}
+      """;
 
   private final ChatOrchestrationService chatOrchestrationService;
   private final RequestContextResolver requestContextResolver;
@@ -66,30 +108,14 @@ public class ChatController {
                     tracing/correlation only (idempotency-friendly, not deduplicated anywhere). The \
                     caller — not this backend — is responsible for remembering and resending `history`.
 
-                    SSE event contract (in order):
-                    - `stream-start` — { messageId, timestamp }
-                    - any mix of, zero or more times, in the order the ML Agent produced them:
-                      - `message` — { messageId, sequence, content, timestamp }
-                      - `tool-call` — { messageId, toolCallId, name, argsJson, timestamp } — the ML \
-                    Agent invoked a tool while producing its answer; `argsJson` is the tool's \
-                    arguments serialized as a JSON string. `toolCallId` matches the `tool-result` \
-                    for the same invocation.
-                      - `tool-result` — { messageId, toolCallId, status, ms, rowCount, timestamp } — \
-                    the outcome of a tool invocation. `status` is `OK` or `FAILED` (any value the ML \
-                    Agent doesn't recognize is also reported as `FAILED`). `ms` is the tool's \
-                    execution duration. `rowCount` is the number of rows/items the tool returned, \
-                    present only when `status` is `OK` and the ML Agent reported one, `null` otherwise.
-                    - `payload` (at most one) — { messageId, payload: { keySignals, citations }, timestamp }
-                    - exactly one of:
-                      - `stream-complete` — { messageId, totalChunks, truncated, timestamp }
-                      - `error` — { messageId, errorCode, errorMessage, timestamp }
+                    SSE event contract — the ML Agent's (Thoughtful Labs `ChatAgent.AskCaseManager`)                     response, forwarded as-is. This backend does not rename events or fields,                     reshape payloads, or add its own wrapper. For every ML Agent `AnswerEvent`:
+                    - `event:` is the name of the `AnswerEvent` oneof field that is set — one of                     `chunk`, `tool_call`, `tool_result`, `payload`, `done`, `error`, `ping`.
+                    - `data:` is that whole `AnswerEvent` as canonical proto3 JSON, with the                     original `.proto` field names and nesting (see `src/main/proto/*.proto`): e.g.                     `{"tool_call":{"tool_call_id":"t-1","name":"getCase","args_json":"{...}"}}`.                     Enums are their proto names (`STATUS_OK`, `STOP_REASON_TRUNCATED`,                     `ERROR_CODE_MODEL_REFUSED`), fields at their default value are still present,                     and `int64` fields (`ms`, `row_count`, `latency_ms`, `tokens_in`, `tokens_out`)                     are JSON strings, per the proto3 JSON mapping.
+                    - `id:` is a 0-based frame counter added by this backend (SSE transport only).
 
-                    `errorCode` is one of ML_AGENT_TIMEOUT, ML_AGENT_UNAVAILABLE, ML_AGENT_ERROR, \
-                    ML_AGENT_REFUSED, CONCURRENCY_LIMIT_REACHED (bulkhead full or circuit breaker \
-                    open), INTERNAL_ERROR. Because the HTTP status is already committed to 200 by \
-                    the time any of these can occur, every post-acceptance failure — including a \
-                    rejected/timed-out ML Agent call — surfaces as an `error` event on this same \
-                    stream, never a different HTTP status.
+                    Events arrive in the order the ML Agent produced them. The ML Agent's own                     contract rules apply unchanged: consecutive `chunk` events form one text block;                     `payload` may arrive at any point; `done` and `error` are terminal; `ping` is a                     keepalive with no content; clients must ignore event names they don't recognise.                     The ML Agent's `error` event (a model-level failure: `code`, `retryable`) is                     forwarded like any other event, never translated.
+
+                    The one event this backend adds: `service_error` —                     { messageId, errorCode, errorMessage, timestamp } — sent (terminal) only when a                     failure produced no ML Agent event of its own: the agent could not be reached,                     timed out, or rejected the call at the transport level, or this backend's own                     circuit breaker/bulkhead/validation stopped it. `errorCode` is one of                     ML_AGENT_TIMEOUT, ML_AGENT_UNAVAILABLE, ML_AGENT_ERROR, NOT_FOUND,                     VALIDATION_ERROR, CONCURRENCY_LIMIT_REACHED (bulkhead full or circuit breaker                     open), INTERNAL_ERROR. Because the HTTP status is already committed to 200 by                     then, these always arrive on this same stream, never as a different HTTP status.
 
                     For local testing, the mock ML Agent recognizes these keywords anywhere in \
                     `message` to simulate each failure mode: `trigger:slow`, `trigger:timeout`, \
@@ -111,8 +137,27 @@ public class ChatController {
                     """)
   @ApiResponse(
       responseCode = "200",
-      description = "SSE stream of chatbot events",
-      content = @Content(mediaType = MediaType.TEXT_EVENT_STREAM_VALUE))
+      description =
+          "SSE stream of the ML Agent's AnswerEvents, forwarded as-is (plus `service_error` for "
+              + "backend/transport failures)",
+      content =
+          @Content(
+              mediaType = MediaType.TEXT_EVENT_STREAM_VALUE,
+              schema = @Schema(type = "string"),
+              examples = {
+                @ExampleObject(
+                    name = "Successful answer",
+                    summary = "tool trace, streamed text, structured payload, done",
+                    value = SSE_EXAMPLE_SUCCESS),
+                @ExampleObject(
+                    name = "ML Agent error event",
+                    summary = "the agent's own model-level error, forwarded untouched",
+                    value = SSE_EXAMPLE_AGENT_ERROR),
+                @ExampleObject(
+                    name = "Backend/transport failure",
+                    summary = "no agent event to forward, so this backend emits service_error",
+                    value = SSE_EXAMPLE_SERVICE_ERROR)
+              }))
   @ApiResponse(
       responseCode = "400",
       description =
