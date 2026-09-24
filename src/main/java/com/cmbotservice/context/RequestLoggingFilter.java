@@ -6,6 +6,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.server.reactive.ServerHttpRequest;
 import org.springframework.stereotype.Component;
@@ -46,10 +47,11 @@ public class RequestLoggingFilter implements WebFilter {
         () -> {
           Instant start = Instant.now();
           log.info(
-              "HTTP_REQUEST_RECEIVED method={} path={} tenantHeader={} orgHeader={} userHeader={}"
-                  + " sessionCookiePresent={} remote={}",
+              "HTTP_REQUEST_RECEIVED method={} path={} origin={} tenantHeader={} orgHeader={}"
+                  + " userHeader={} sessionCookiePresent={} remote={}",
               method,
               path,
+              headerOrAbsent(request, HttpHeaders.ORIGIN),
               headerOrAbsent(request, RequestHeaders.TENANT_ID),
               headerOrAbsent(request, RequestHeaders.ORGANIZATION_ID),
               headerOrAbsent(request, RequestHeaders.USER_ID),

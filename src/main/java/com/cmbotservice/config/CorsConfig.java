@@ -25,11 +25,12 @@ import org.springframework.web.cors.reactive.UrlBasedCorsConfigurationSource;
  * all" is implemented with the origin <i>pattern</i> {@code *}, which echoes the caller's own
  * {@code Origin} back — the only way to allow every origin and still send cookies.
  *
- * <p>Ordered first ({@link Ordered#HIGHEST_PRECEDENCE}), ahead of {@code
- * SessionAuthenticationWebFilter}. Two reasons: the browser's {@code OPTIONS} preflight carries no
- * cookie, so if authentication ran first it would answer 401 and the browser would report a CORS
- * error; and CORS headers must already be on the response when the auth filter writes a 401/503, or
- * the frontend sees "CORS error" instead of the real status.
+ * <p>Ordered right after {@code CorrelationIdFilter} and {@code RequestLoggingFilter} (so a
+ * preflight is still correlated and logged), and ahead of {@code SessionAuthenticationWebFilter}.
+ * Two reasons: the browser's {@code OPTIONS} preflight carries no cookie, so if authentication ran
+ * first it would answer 401 and the browser would report a CORS error; and CORS headers must
+ * already be on the response when the auth filter writes a 401/503, or the frontend sees "CORS
+ * error" instead of the real status.
  */
 @Configuration
 public class CorsConfig {
@@ -39,7 +40,7 @@ public class CorsConfig {
   private static final String ALLOW_ALL = "*";
 
   @Bean
-  @Order(Ordered.HIGHEST_PRECEDENCE)
+  @Order(Ordered.HIGHEST_PRECEDENCE + 2)
   public CorsWebFilter corsWebFilter(SecurityProperties properties) {
     List<String> origins = allowedOriginPatterns(properties.cors().allowedOrigins());
 
@@ -51,13 +52,18 @@ public class CorsConfig {
     // Let the frontend read the correlation id to quote in bug reports / match to logs.
     configuration.setExposedHeaders(List.of(RequestHeaders.CORRELATION_ID));
     configuration.setMaxAge(Duration.ofHours(1));
+    // Chrome's Private/Local Network Access: a page served from a public origin calling
+    // localhost or a private IP sends "Access-Control-Request-Private-Network: true" on the
+    // preflight and blocks the request (shown as a CORS error with no response headers)
+    // unless the response grants it.
+    configuration.setAllowPrivateNetwork(true);
 
     UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
     source.registerCorsConfiguration("/**", configuration);
 
     log.info(
         "CORS_CONFIGURED allowedOrigins={} credentials=true methods=* headers=*"
-            + " exposedHeaders={}",
+            + " privateNetwork=true exposedHeaders={}",
         origins.equals(List.of(ALLOW_ALL)) ? "* (any origin)" : origins,
         RequestHeaders.CORRELATION_ID);
     return new CorsWebFilter(source);

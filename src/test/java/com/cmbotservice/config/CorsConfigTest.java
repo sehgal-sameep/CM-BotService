@@ -74,6 +74,25 @@ class CorsConfigTest {
     }
 
     @Test
+    void privateNetworkPreflight_fromAPublicOriginToLocalhost_isGranted() {
+      // Chrome's Private/Local Network Access: without this grant the browser blocks the
+      // request and DevTools shows a CORS error with no response headers.
+      client
+          .method(HttpMethod.OPTIONS)
+          .uri("/api/v1/chat/messages")
+          .header(HttpHeaders.ORIGIN, ANY_ORIGIN)
+          .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "POST")
+          .header("Access-Control-Request-Private-Network", "true")
+          .exchange()
+          .expectStatus()
+          .isOk()
+          .expectHeader()
+          .valueEquals("Access-Control-Allow-Private-Network", "true")
+          .expectBody()
+          .consumeWith(result -> assertCorsAllowed(result.getResponseHeaders()));
+    }
+
+    @Test
     void actualRequestFromAnyOrigin_carriesCorsHeaders_andExposesCorrelationId() {
       client
           .post()
