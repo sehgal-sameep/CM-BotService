@@ -1,6 +1,7 @@
 package com.cmbotservice.web.controller;
 
 import com.cmbotservice.common.ErrorCode;
+import com.cmbotservice.common.LogSanitizer;
 import com.cmbotservice.context.CorrelationIdFilter;
 import com.cmbotservice.context.RequestHeaders;
 import com.cmbotservice.security.SessionContext;
@@ -73,9 +74,23 @@ public class SessionDebugController {
                     here either — this only proves whether the lookup itself finds a record and \
                     what that record contains. Only available in `chatbot.security.mode: BFF_SESSION`.
 
-                    In Swagger UI: paste the session cookie's raw value into the `SESSION` cookie \
-                    field below (not the whole `Cookie:` header, just the value) and the caller's \
-                    tenant into the `X-Tenant-Id` header field, then Execute.
+                    **Swagger UI's `SESSION` cookie field below does not work.** Browsers forbid \
+                    page JavaScript from setting the `Cookie` request header, so "Try it out" \
+                    silently sends no cookie and this endpoint answers \
+                    `400 VALIDATION_ERROR: Required cookie 'SESSION' is not present.` (a known \
+                    Swagger UI limitation, not a server bug). Use curl instead:
+
+                    ```
+                    curl -i "http://localhost:8080/api/v1/debug/session-lookup" \\
+                      -H "Cookie: SESSION=<raw session value>" \\
+                      -H "X-Tenant-Id: <tenant>"
+                    ```
+
+                    Or, to keep using "Try it out": first set the cookie on this Swagger page's \
+                    own origin from the browser DevTools console — \
+                    `document.cookie = "SESSION=<raw session value>; path=/"` — then Execute; \
+                    the browser attaches it automatically (same origin). \
+                    See `docs/SESSION_DEBUG_API.md`.
                     """)
   @ApiResponse(
       responseCode = "200",
@@ -106,9 +121,20 @@ public class SessionDebugController {
           @RequestHeader(RequestHeaders.TENANT_ID)
           String tenant,
       ServerWebExchange exchange) {
+    log.info(
+        "DEBUG_SESSION_LOOKUP_STARTED session={} tenant={}",
+        LogSanitizer.maskSecret(sessionId),
+        tenant);
     return sessionStore
         .findSession(sessionId, tenant)
-        .<ResponseEntity<?>>map(session -> ResponseEntity.ok(toResponse(session)))
+        .<ResponseEntity<?>>map(
+            session -> {
+              log.info(
+                  "DEBUG_SESSION_LOOKUP_FOUND status=200 username={} tenantId={}",
+                  session.username(),
+                  session.tenantId());
+              return ResponseEntity.ok(toResponse(session));
+            })
         .switchIfEmpty(Mono.fromSupplier(() -> notFound(exchange)))
         .onErrorResume(
             SessionDebugController::isRedisFailure,
@@ -130,7 +156,7 @@ public class SessionDebugController {
   }
 
   private static ResponseEntity<?> notFound(ServerWebExchange exchange) {
-    log.warn("DEBUG_SESSION_LOOKUP no session record found");
+    log.warn("DEBUG_SESSION_LOOKUP_NOT_FOUND status=401 — no usable session record");
     return ResponseEntity.status(401)
         .body(
             ErrorResponse.of(
@@ -140,7 +166,9 @@ public class SessionDebugController {
   }
 
   private static ResponseEntity<?> storeUnavailable(ServerWebExchange exchange, Throwable ex) {
-    log.error("DEBUG_SESSION_LOOKUP Redis unavailable: {}", ex.toString());
+    // The store already logged REDIS_SESSION_LOOKUP_FAILED with endpoint + stack trace.
+    log.error(
+        "DEBUG_SESSION_LOOKUP_STORE_UNAVAILABLE status=503 cause={}", LogSanitizer.causeChain(ex));
     return ResponseEntity.status(503)
         .body(
             ErrorResponse.of(

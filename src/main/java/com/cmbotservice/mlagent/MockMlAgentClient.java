@@ -94,12 +94,17 @@ public class MockMlAgentClient implements MlAgentClient {
       @Value("${app.mock-ml-agent.slow-chunk-delay-ms}") long slowChunkDelayMs) {
     this.chunkDelay = Duration.ofMillis(chunkDelayMs);
     this.slowChunkDelay = Duration.ofMillis(slowChunkDelayMs);
+    log.info(
+        "ML_AGENT_MOCK_CONFIGURED ml-agent.mode=mock — no real ML Agent will be called"
+            + " chunkDelayMs={} slowChunkDelayMs={}",
+        chunkDelayMs,
+        slowChunkDelayMs);
   }
 
   @Override
   public Flux<AnswerEvent> streamResponse(MlAgentRequest request) {
     MockScenario scenario = MockScenario.fromPrompt(request.message());
-    log.debug("Mock ML Agent selected scenario={} for messageId={}", scenario, request.messageId());
+    log.info("MOCK_ML_AGENT_CALL_STARTED messageId={} scenario={}", request.messageId(), scenario);
 
     return switch (scenario) {
       case ERROR ->

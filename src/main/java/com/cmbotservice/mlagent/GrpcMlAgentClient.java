@@ -1,6 +1,7 @@
 package com.cmbotservice.mlagent;
 
 import com.cmbotservice.common.ErrorCode;
+import com.cmbotservice.common.LogSanitizer;
 import com.cmbotservice.common.MlAgentCommunicationException;
 import com.cmbotservice.common.MlAgentRejectedException;
 import com.cmbotservice.common.MlAgentUnavailableException;
@@ -11,7 +12,6 @@ import com.cmbotservice.mlagent.grpc.v1.AskCaseManagerRequest;
 import com.cmbotservice.mlagent.grpc.v1.CaseManagerAnswerPayload;
 import com.cmbotservice.mlagent.grpc.v1.ChatAgentGrpc;
 import com.cmbotservice.mlagent.grpc.v1.ConversationTurn;
-import com.cmbotservice.mlagent.grpc.v1.ToolResult;
 import io.grpc.Status;
 import io.grpc.stub.ClientCallStreamObserver;
 import io.grpc.stub.ClientResponseObserver;
@@ -66,9 +66,25 @@ public class GrpcMlAgentClient implements MlAgentClient {
   @Override
   public Flux<AnswerEvent> streamResponse(MlAgentRequest request) {
     AskCaseManagerRequest protoRequest = toProtoRequest(request);
-    return grpcEventFlux(protoRequest)
+    return Flux.defer(
+            () -> {
+              log.info(
+                  "GRPC_CALL_STARTED messageId={} rpc=ChatAgent/AskCaseManager target={}"
+                      + " historyTurns={} promptLength={}",
+                  request.messageId(),
+                  chatAgentStub.getChannel().authority(),
+                  protoRequest.getHistoryCount(),
+                  protoRequest.getPrompt().length());
+              return grpcEventFlux(protoRequest);
+            })
         .filter(GrpcMlAgentClient::isForwardable)
-        .onErrorMap(io.grpc.StatusRuntimeException.class, this::mapStatus);
+        .doOnComplete(
+            () ->
+                log.info(
+                    "GRPC_CALL_COMPLETED messageId={} target={} status=OK",
+                    request.messageId(),
+                    chatAgentStub.getChannel().authority()))
+        .onErrorMap(io.grpc.StatusRuntimeException.class, ex -> mapStatus(request.messageId(), ex));
   }
 
   /**
@@ -135,55 +151,36 @@ public class GrpcMlAgentClient implements MlAgentClient {
   }
 
   /**
-   * Observes (logs) each event and decides only whether it is forwarded at all — never what it
-   * contains. The {@code payload} citation invariant ("a signal without a resolvable citation is a
-   * defect") is reported as a warning rather than failing the stream: rejecting the whole answer
-   * would be this backend overriding the ML Agent's response, and the contract already requires the
-   * UI to tolerate unresolvable citation ids.
+   * Decides only whether an event is forwarded at all — never what it contains. Per-event INFO
+   * logging lives in {@code ChatOrchestrationServiceImpl}, shared by every {@link MlAgentClient};
+   * this class only warns about contract anomalies it can see on the wire.
    */
   private static boolean isForwardable(AnswerEvent event) {
-    switch (event.getEventCase()) {
-      case TOOL_CALL ->
-          log.debug(
-              "ML Agent tool_call id={} name={}",
-              event.getToolCall().getToolCallId(),
-              event.getToolCall().getName());
-      case TOOL_RESULT -> {
-        ToolResult toolResult = event.getToolResult();
-        log.debug(
-            "ML Agent tool_result id={} status={} ms={} rowCount={}",
-            toolResult.getToolCallId(),
-            toolResult.getStatus(),
-            toolResult.getMs(),
-            toolResult.hasRowCount() ? toolResult.getRowCount() : "n/a");
-      }
-      case PAYLOAD -> warnOnPayloadContractViolations(event.getPayload());
-      case ERROR ->
-          log.debug(
-              "ML Agent error event code={} retryable={}",
-              event.getError().getCode(),
-              event.getError().getRetryable());
-      case PING -> log.trace("ML Agent ping received");
-      case CHUNK, DONE -> {
-        // Forwarded as-is; nothing worth logging per event.
-      }
-      case EVENT_NOT_SET -> {
-        log.debug("ML Agent AnswerEvent had no recognised event set; ignoring per contract");
-        return false;
-      }
+    if (event.getEventCase() == AnswerEvent.EventCase.EVENT_NOT_SET) {
+      log.warn(
+          "GRPC_EVENT_IGNORED reason=AnswerEvent has no recognised event set (empty, or an event"
+              + " type newer than this build's .proto) — skipped per contract");
+      return false;
+    }
+    if (event.getEventCase() == AnswerEvent.EventCase.PAYLOAD) {
+      warnOnPayloadContractViolations(event.getPayload());
     }
     return true;
   }
 
   private static void warnOnPayloadContractViolations(AnswerPayload payload) {
     if (payload.getPayloadCase() != AnswerPayload.PayloadCase.CASE_MANAGER_ANSWER_PAYLOAD) {
-      log.warn("ML Agent 'payload' event has no recognised payload arm set; forwarding as-is");
+      log.warn(
+          "GRPC_PAYLOAD_CONTRACT_VIOLATION reason=no recognised payload arm set — forwarding"
+              + " as-is");
       return;
     }
     for (CaseManagerAnswerPayload.KeySignal signal :
         payload.getCaseManagerAnswerPayload().getKeySignalsList()) {
       if (signal.getCitationsCount() == 0) {
-        log.warn("ML Agent 'payload' key signal is missing a required citation; forwarding as-is");
+        log.warn(
+            "GRPC_PAYLOAD_CONTRACT_VIOLATION reason=key signal without a citation — forwarding"
+                + " as-is");
       }
     }
   }
@@ -193,8 +190,17 @@ public class GrpcMlAgentClient implements MlAgentClient {
    * 401/403/404/422/429/503 status mapping, just keyed off {@link Status.Code} instead of an HTTP
    * status.
    */
-  private Throwable mapStatus(io.grpc.StatusRuntimeException ex) {
+  private Throwable mapStatus(String messageId, io.grpc.StatusRuntimeException ex) {
     Status.Code code = ex.getStatus().getCode();
+    // The gRPC status is the ML Agent's (or the channel's) own verdict — log it verbatim,
+    // with its description and root cause, before it is mapped to our exception types.
+    log.error(
+        "GRPC_CALL_FAILED messageId={} target={} status={} description='{}' cause=[{}]",
+        messageId,
+        chatAgentStub.getChannel().authority(),
+        code,
+        ex.getStatus().getDescription(),
+        ex.getCause() == null ? "none" : LogSanitizer.causeChain(ex.getCause()));
     return switch (code) {
       case UNAVAILABLE, UNKNOWN ->
           new MlAgentUnavailableException("Could not reach the ML Agent", ex);

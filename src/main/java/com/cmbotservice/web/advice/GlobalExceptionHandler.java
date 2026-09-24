@@ -1,6 +1,7 @@
 package com.cmbotservice.web.advice;
 
 import com.cmbotservice.common.ErrorCode;
+import com.cmbotservice.common.LogSanitizer;
 import com.cmbotservice.context.CorrelationIdFilter;
 import com.cmbotservice.web.dto.ErrorResponse;
 import jakarta.validation.ConstraintViolationException;
@@ -38,14 +39,17 @@ public class GlobalExceptionHandler {
         ex.getBindingResult().getFieldErrors().stream()
             .map(fieldError -> fieldError.getField() + ": " + fieldError.getDefaultMessage())
             .collect(Collectors.joining("; "));
-    log.warn("Request validation failed: {}", message);
+    log.warn("REQUEST_VALIDATION_FAILED {} status=400 errors=[{}]", describe(exchange), message);
     return badRequest(ErrorCode.VALIDATION_ERROR, message, exchange);
   }
 
   @ExceptionHandler(ConstraintViolationException.class)
   public ResponseEntity<ErrorResponse> handleConstraintViolation(
       ConstraintViolationException ex, ServerWebExchange exchange) {
-    log.warn("Request constraint violation: {}", ex.getMessage());
+    log.warn(
+        "REQUEST_CONSTRAINT_VIOLATION {} status=400 errors=[{}]",
+        describe(exchange),
+        ex.getMessage());
     return badRequest(ErrorCode.VALIDATION_ERROR, ex.getMessage(), exchange);
   }
 
@@ -65,14 +69,19 @@ public class GlobalExceptionHandler {
         status.value() == 404
             ? "No such endpoint."
             : (ex.getReason() != null ? ex.getReason() : "Invalid request.");
-    log.warn("Request rejected with status {}: {}", status, message);
+    log.warn(
+        "REQUEST_REJECTED {} status={} reason='{}'", describe(exchange), status.value(), message);
     return ResponseEntity.status(status)
         .body(ErrorResponse.of(code, message, correlationId(exchange)));
   }
 
   @ExceptionHandler(Exception.class)
   public ResponseEntity<ErrorResponse> handleUnexpected(Exception ex, ServerWebExchange exchange) {
-    log.error("Unexpected error while processing request", ex);
+    log.error(
+        "REQUEST_FAILED_UNEXPECTEDLY {} status=500 cause=[{}]",
+        describe(exchange),
+        LogSanitizer.causeChain(ex),
+        ex);
     return ResponseEntity.internalServerError()
         .body(
             ErrorResponse.of(
@@ -85,6 +94,13 @@ public class GlobalExceptionHandler {
       ErrorCode code, String message, ServerWebExchange exchange) {
     return ResponseEntity.badRequest()
         .body(ErrorResponse.of(code, message, correlationId(exchange)));
+  }
+
+  private static String describe(ServerWebExchange exchange) {
+    return "method="
+        + exchange.getRequest().getMethod().name()
+        + " path="
+        + exchange.getRequest().getPath().value();
   }
 
   private static String correlationId(ServerWebExchange exchange) {

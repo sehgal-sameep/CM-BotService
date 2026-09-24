@@ -24,8 +24,7 @@ public record ChatRequest(
             description = "Case identifier, forwarded as-is to the ML Agent.",
             example = "case-456")
         String caseId,
-    @Valid
-        @Size(max = 50, message = "history must contain at most 50 turns")
+    @Size(max = 50, message = "history must contain at most 50 turns")
         @Schema(
             description =
                 "Explicit conversation transcript, oldest turn first. The ML Agent's contract has "
@@ -34,7 +33,7 @@ public record ChatRequest(
                     + "conversation. This backend does not assemble, store, or interpret this transcript — "
                     + "the caller owns remembering and resending it.",
             requiredMode = Schema.RequiredMode.NOT_REQUIRED)
-        List<HistoryTurn> history,
+        List<@Valid HistoryTurn> history,
     @Size(max = 100, message = "requestId must be at most 100 characters")
         @Schema(
             description =

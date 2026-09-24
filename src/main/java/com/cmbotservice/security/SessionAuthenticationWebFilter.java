@@ -1,5 +1,6 @@
 package com.cmbotservice.security;
 
+import com.cmbotservice.common.LogSanitizer;
 import com.cmbotservice.context.CorrelationIdFilter;
 import com.cmbotservice.web.ApiPaths;
 import com.cmbotservice.web.dto.ErrorResponse;
@@ -92,6 +93,11 @@ public class SessionAuthenticationWebFilter implements WebFilter {
       return reject(exchange, AuthRejectionReason.MISSING_TENANT);
     }
 
+    log.info(
+        "AUTH_CHECK_STARTED session={} tenant={} — looking up the BFF session in Redis",
+        LogSanitizer.maskSecret(sessionCookie.getValue()),
+        tenant);
+
     // NOTE: deliberately NOT `.flatMap(...).switchIfEmpty(...)` — a successful
     // chain.filter() delegation is a Mono<Void>, which by definition never emits a
     // value, so switchIfEmpty chained after that flatMap would fire on *every*
@@ -117,7 +123,7 @@ public class SessionAuthenticationWebFilter implements WebFilter {
 
   private Mono<Void> succeed(
       ServerWebExchange exchange, WebFilterChain chain, SessionContext session) {
-    log.debug("AUTH_SUCCEEDED username={} tenantId={}", session.username(), session.tenantId());
+    log.info("AUTH_SUCCEEDED username={} tenantId={}", session.username(), session.tenantId());
     exchange.getAttributes().put(SessionContext.EXCHANGE_ATTRIBUTE, session);
     return chain.filter(exchange);
   }
@@ -132,10 +138,13 @@ public class SessionAuthenticationWebFilter implements WebFilter {
           ex.toString());
       return chain.filter(exchange);
     }
+    // The store has already logged REDIS_SESSION_LOOKUP_FAILED with the endpoint, full
+    // cause chain, and stack trace; this line records the auth decision taken on it.
     log.error(
-        "AUTH_REJECTED reason={} cause={}",
+        "AUTH_REJECTED reason={} status={} cause={}",
         AuthRejectionReason.SESSION_STORE_UNAVAILABLE.logToken(),
-        ex.toString());
+        AuthRejectionReason.SESSION_STORE_UNAVAILABLE.httpStatus().value(),
+        LogSanitizer.causeChain(ex));
     return writeRejection(exchange, AuthRejectionReason.SESSION_STORE_UNAVAILABLE);
   }
 
@@ -144,10 +153,12 @@ public class SessionAuthenticationWebFilter implements WebFilter {
         exchange.getRequest().getCookies().getFirst(properties.session().cookieName());
     boolean present = cookie != null && StringUtils.hasText(cookie.getValue());
     log.warn(
-        "AUTH_REJECTED reason={} cookiePresent={} cookieLength={}",
+        "AUTH_REJECTED reason={} status={} cookieName={} cookiePresent={} session={}",
         reason.logToken(),
+        reason.httpStatus().value(),
+        properties.session().cookieName(),
         present,
-        present ? cookie.getValue().length() : 0);
+        present ? LogSanitizer.maskSecret(cookie.getValue()) : "<absent>");
     return writeRejection(exchange, reason);
   }
 

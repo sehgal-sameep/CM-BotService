@@ -29,7 +29,9 @@ design, SSE contract, tracing/MDC mechanism, etc.) is in
 simple, non-code walkthrough of the request/response flow and payloads (frontend ↔
 this backend ↔ ML Agent), see
 [`docs/CHAT_API_GUIDE.md`](docs/CHAT_API_GUIDE.md) — hand that one to a frontend
-developer or a new teammate.
+developer or a new teammate. For copy-paste curl commands for every endpoint (use these
+rather than Swagger's "Try it out", which can't send the session cookie or show a live
+stream), see [`docs/API_CURL_REFERENCE.md`](docs/API_CURL_REFERENCE.md).
 
 ## Project setup & build
 
@@ -248,9 +250,13 @@ no chat payload involved. **Not part of this service's stable API** — it's a
 verification tool for the current minimal flow, meant to be removed once no longer
 needed.
 
-In Swagger UI: open the endpoint under the "Debug (temporary)" tag, "Try it out",
-paste the session cookie's raw value into the `SESSION` cookie field and the tenant
-into the `X-Tenant-Id` header field, then Execute.
+**Swagger UI's "Try it out" can't send the `SESSION` cookie.** Browsers forbid page
+JavaScript from setting the `Cookie` header, so the request goes out without it and
+returns `400 VALIDATION_ERROR: Required cookie 'SESSION' is not present.` Use curl (below),
+or set the cookie on the Swagger page's origin first from DevTools
+(`document.cookie = "SESSION=<value>; path=/"`). See
+[`docs/SESSION_DEBUG_API.md`](docs/SESSION_DEBUG_API.md) for full instructions,
+including Windows PowerShell (`curl.exe`, not `curl`).
 
 ```bash
 curl "http://localhost:8080/api/v1/debug/session-lookup" -H "Cookie: SESSION=<value>" -H "X-Tenant-Id: t"
@@ -349,7 +355,7 @@ gives in-flight requests/streams up to `spring.lifecycle.timeout-per-shutdown-ph
 Console output is color-coded (via Spring Boot's built-in Logback `%clr` converter, no
 extra dependency) so a developer can scan logs quickly:
 
-- **Level**: `ERROR` red, `WARN` yellow, `INFO`/`DEBUG` green
+- **Level**: `ERROR` red, `WARN` yellow, `INFO` green
 - Trace context `[corrId=...,tenant=...,case=...,trace=...,span=...]`: cyan —
   lets you follow one chatbot interaction across lines at a glance, including its
   OpenTelemetry trace/span IDs
@@ -369,12 +375,36 @@ aggregator. Force it with:
 ./mvnw spring-boot:run -Dspring-boot.run.arguments=--spring.output.ansi.enabled=ALWAYS
 ```
 
-Logical event names to grep for: `CHAT_REQUEST_RECEIVED`, `ML_REQUEST_STARTED`,
-`ML_STREAM_STARTED`, `ML_STREAM_COMPLETED`, `ML_REQUEST_TIMEOUT`, `ML_REQUEST_FAILED`,
-`ML_REQUEST_RETRY`, `ML_AGENT_ERROR_EVENT` (the agent sent its own `error` event, logged with
-its `code`/`retryable`), `SSE_CLIENT_CANCELLED`, `CIRCUIT_BREAKER_OPEN`,
-`CONCURRENCY_LIMIT_REACHED`. Never logged: full prompts/responses (DEBUG-only,
-truncated preview via `LogSanitizer`), auth headers, stack traces in responses.
+Every API request is logged at each step, at INFO for normal progress, WARN for an
+expected rejection or degraded path, and ERROR for a failure. There are **no DEBUG or
+TRACE statements**, so the default `com.cmbotservice` level is `INFO`
+(`LOG_LEVEL_COM_CMBOTSERVICE`; set `WARN` to see only problems). Actuator, Swagger UI,
+and OpenAPI paths are not request-logged, so health probes don't bury real traffic.
+
+Filter by correlation ID to get one request's whole trail. Send
+`X-Correlation-Id: <id>`, or read the one echoed on the response, then
+`grep "corrId=<id>"`. A chat request logs, in order: `HTTP_REQUEST_RECEIVED` →
+(`BFF_SESSION`) `AUTH_CHECK_STARTED`, `REDIS_SESSION_LOOKUP_STARTED`,
+`REDIS_SESSION_RECORD_FOUND`/`_PARSED`, `AUTH_SUCCEEDED` → `REQUEST_CONTEXT_RESOLVED` →
+`CHAT_REQUEST_RECEIVED` → `GRPC_CALL_STARTED` (target host:port) or
+`MOCK_ML_AGENT_CALL_STARTED` → `ML_REQUEST_STARTED` → `ML_STREAM_STARTED` →
+`ML_EVENT_TOOL_CALL`/`_TOOL_RESULT`/`_PAYLOAD`/`_DONE`/`_ERROR` → `ML_STREAM_COMPLETED`
+(per-event-type counts; `chunk`/`ping` are counted rather than logged one by one) →
+`SSE_STREAM_COMPLETED` → `HTTP_REQUEST_COMPLETED` (status, duration).
+
+WARN/ERROR events: `AUTH_REJECTED`, `REDIS_SESSION_RECORD_NOT_FOUND`,
+`REDIS_SESSION_RECORD_INCOMPLETE`/`_UNPARSEABLE`, `REDIS_SESSION_LOOKUP_FAILED`
+(Redis endpoint, full cause chain, stack trace), `GRPC_CALL_FAILED` (gRPC status and
+description), `GRPC_EVENT_IGNORED`, `GRPC_PAYLOAD_CONTRACT_VIOLATION`,
+`ML_REQUEST_RETRY`, `ML_REQUEST_TIMEOUT`, `CIRCUIT_BREAKER_OPEN`,
+`CONCURRENCY_LIMIT_REACHED`, `ML_AGENT_REJECTED`, `ML_REQUEST_FAILED`,
+`SSE_SERVICE_ERROR_SENT`, `REQUEST_VALIDATION_FAILED`, `REQUEST_REJECTED`. At startup:
+`REDIS_SESSION_STORE_CONFIGURED`, `ML_AGENT_GRPC_CHANNEL_CONFIGURED` or
+`ML_AGENT_MOCK_CONFIGURED`.
+
+Never logged: prompt, history, or answer text (only lengths and counts, since case text
+may contain personal data), access/refresh tokens, the Redis password, or the raw
+session ID (only masked by `LogSanitizer.maskSecret`, e.g. `****cdef(len=29)`).
 
 ## Metrics and tracing
 

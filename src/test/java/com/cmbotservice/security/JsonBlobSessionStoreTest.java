@@ -35,7 +35,9 @@ class JsonBlobSessionStoreTest {
     redisTemplate = mock(ReactiveStringRedisTemplate.class);
     valueOperations = mock(ReactiveValueOperations.class);
     when(redisTemplate.opsForValue()).thenReturn(valueOperations);
-    store = new JsonBlobSessionStore(redisTemplate, properties(), objectMapper);
+    store =
+        new JsonBlobSessionStore(
+            redisTemplate, properties(), objectMapper, RedisEndpoint.of("test-redis:6379"));
   }
 
   private static SecurityProperties properties() {

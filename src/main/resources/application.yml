@@ -174,4 +174,6 @@ logging:
     # %clr(%-5level) with no color argument uses Boot's built-in per-level coloring: ERROR=red, WARN=yellow, else=green.
     console: "%clr(%d{yyyy-MM-dd HH:mm:ss.SSS}){faint} %clr([%thread]){faint} %clr(%-5level) %clr([corrId=%X{correlationId:-},tenant=%X{tenantId:-},case=%X{caseId:-},trace=%X{traceId:-},span=%X{spanId:-}]){cyan} %clr(%logger{36}){blue} %clr(-){faint} %msg%n%wEx"
   level:
-    com.cmbotservice: ${LOG_LEVEL_COM_CMBOTSERVICE:DEBUG}
+    # INFO is the most detailed level this service logs at (no DEBUG/TRACE statements);
+    # set WARN to see only problems.
+    com.cmbotservice: ${LOG_LEVEL_COM_CMBOTSERVICE:INFO}

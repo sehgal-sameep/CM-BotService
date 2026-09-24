@@ -4,6 +4,8 @@ import com.cmbotservice.context.CorrelationIdFilter;
 import com.cmbotservice.context.RequestContext;
 import com.cmbotservice.context.RequestContextResolver;
 import com.cmbotservice.context.RequestHeaders;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import org.springframework.web.server.ServerWebExchange;
@@ -23,6 +25,8 @@ import org.springframework.web.server.ServerWebExchange;
 @ConditionalOnProperty(prefix = "chatbot.security", name = "mode", havingValue = "BFF_SESSION")
 public class SessionRequestContextResolver implements RequestContextResolver {
 
+  private static final Logger log = LoggerFactory.getLogger(SessionRequestContextResolver.class);
+
   private static final String UNKNOWN_USER = "unknown-user";
 
   @Override
@@ -38,6 +42,20 @@ public class SessionRequestContextResolver implements RequestContextResolver {
     String tenantId = RequestContextResolver.requireHeader(exchange, RequestHeaders.TENANT_ID);
     String organization =
         RequestContextResolver.requireHeader(exchange, RequestHeaders.ORGANIZATION_ID);
+    if (session == null) {
+      log.warn(
+          "REQUEST_CONTEXT_WITHOUT_SESSION — no authenticated session on this request (only"
+              + " possible with fail-open-on-redis-error); userId='{}', no access token",
+          UNKNOWN_USER);
+    }
+    log.info(
+        "REQUEST_CONTEXT_RESOLVED source=bff-session tenantId={} organization={} caseId={}"
+            + " userId={} accessTokenPresent={}",
+        tenantId,
+        organization,
+        caseId,
+        userId,
+        accessToken != null);
     return new RequestContext(tenantId, caseId, organization, userId, correlationId, accessToken);
   }
 }

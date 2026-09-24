@@ -5,6 +5,8 @@ import io.grpc.ManagedChannel;
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
 import jakarta.annotation.PreDestroy;
 import java.util.concurrent.TimeUnit;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -30,6 +32,8 @@ import org.springframework.context.annotation.Configuration;
 @ConditionalOnProperty(prefix = "ml-agent", name = "mode", havingValue = "grpc")
 public class GrpcChannelConfig {
 
+  private static final Logger log = LoggerFactory.getLogger(GrpcChannelConfig.class);
+
   private ManagedChannel channel;
 
   @Bean
@@ -39,6 +43,14 @@ public class GrpcChannelConfig {
             .usePlaintext()
             .maxInboundMessageSize((int) properties.grpcMaxInboundMessageSize().toBytes())
             .build();
+    log.info(
+        "ML_AGENT_GRPC_CHANNEL_CONFIGURED target={}:{} tls=false maxInboundMessageSize={}"
+            + " firstResponseTimeout={} idleTimeout={}",
+        properties.grpcHost(),
+        properties.grpcPort(),
+        properties.grpcMaxInboundMessageSize(),
+        properties.firstResponseTimeout(),
+        properties.idleTimeout());
     return channel;
   }
 
@@ -55,6 +67,7 @@ public class GrpcChannelConfig {
   @PreDestroy
   void shutdown() {
     if (channel != null) {
+      log.info("ML_AGENT_GRPC_CHANNEL_SHUTDOWN target={}", channel.authority());
       channel.shutdown();
       try {
         channel.awaitTermination(5, TimeUnit.SECONDS);

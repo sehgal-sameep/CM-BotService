@@ -27,10 +27,14 @@ import io.github.resilience4j.reactor.bulkhead.operator.BulkheadOperator;
 import io.github.resilience4j.reactor.circuitbreaker.operator.CircuitBreakerOperator;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Collections;
+import java.util.EnumMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -105,14 +109,34 @@ public class ChatOrchestrationServiceImpl implements ChatOrchestrationService {
   private Flux<ServerSentEvent<Object>> doStreamMessage(
       RequestContext context, ChatRequest request) {
     String messageId = UUID.randomUUID().toString();
+    // Identifiers and sizes only — the prompt and history are case free text that may
+    // contain personal data, so their content is never logged (see LogSanitizer).
     log.info(
-        "CHAT_REQUEST_RECEIVED messageId={} promptPreview='{}'",
+        "CHAT_REQUEST_RECEIVED messageId={} userId={} organization={} requestId={}"
+            + " messageLength={} historyTurns={} endUserIdPresent={}",
         messageId,
-        LogSanitizer.preview(request.message()));
+        context.userId(),
+        context.organization(),
+        request.requestId() == null ? "<absent>" : request.requestId(),
+        request.message().length(),
+        request.history() == null ? 0 : request.history().size(),
+        request.endUserId() != null);
     metrics.connectionOpened();
 
+    boolean tooLong = request.message().length() > chatProperties.maxMessageLength();
+    if (tooLong) {
+      log.warn(
+          "CHAT_REQUEST_REJECTED messageId={} reason=message too long messageLength={}"
+              + " maxMessageLength={}",
+          messageId,
+          request.message().length(),
+          chatProperties.maxMessageLength());
+    }
+    AtomicLong framesSent = new AtomicLong();
+    Instant streamStart = Instant.now();
+
     Flux<AnswerEvent> mlEvents =
-        request.message().length() > chatProperties.maxMessageLength()
+        tooLong
             ? Flux.error(
                 new ResponseStatusException(
                     HttpStatus.BAD_REQUEST,
@@ -126,18 +150,33 @@ public class ChatOrchestrationServiceImpl implements ChatOrchestrationService {
         .onErrorResume(
             AbortedException.class,
             ex -> {
-              log.debug("Client aborted mid-stream for messageId={}", messageId);
+              log.info(
+                  "SSE_CLIENT_ABORTED messageId={} — client connection closed mid-write",
+                  messageId);
               return Flux.empty();
             })
         .onErrorResume(ex -> Flux.just(SseEvents.fromServiceError(toServiceError(messageId, ex))))
         .index()
         .map(indexed -> SseEvents.withId(indexed.getT1(), indexed.getT2()))
+        .doOnNext(event -> framesSent.incrementAndGet())
         .doOnCancel(
             () -> {
               metrics.connectionCancelled();
-              log.info("SSE_CLIENT_CANCELLED messageId={}", messageId);
+              log.info(
+                  "SSE_CLIENT_CANCELLED messageId={} framesSent={} durationMs={}",
+                  messageId,
+                  framesSent.get(),
+                  Duration.between(streamStart, Instant.now()).toMillis());
             })
-        .doOnComplete(metrics::connectionCompleted);
+        .doOnComplete(
+            () -> {
+              metrics.connectionCompleted();
+              log.info(
+                  "SSE_STREAM_COMPLETED messageId={} framesSent={} durationMs={}",
+                  messageId,
+                  framesSent.get(),
+                  Duration.between(streamStart, Instant.now()).toMillis());
+            });
   }
 
   /**
@@ -162,6 +201,8 @@ public class ChatOrchestrationServiceImpl implements ChatOrchestrationService {
 
     AtomicBoolean firstEventSeen = new AtomicBoolean(false);
     AtomicBoolean agentErrorEventSeen = new AtomicBoolean(false);
+    Map<AnswerEvent.EventCase, Integer> eventCounts =
+        Collections.synchronizedMap(new EnumMap<>(AnswerEvent.EventCase.class));
     AtomicReference<Throwable> lastError = new AtomicReference<>();
     Instant startedAt = Instant.now();
 
@@ -171,17 +212,16 @@ public class ChatOrchestrationServiceImpl implements ChatOrchestrationService {
             .doOnNext(
                 evt -> {
                   if (firstEventSeen.compareAndSet(false, true)) {
-                    metrics.recordFirstResponseLatency(Duration.between(startedAt, Instant.now()));
-                    log.info("ML_STREAM_STARTED messageId={}", messageId);
-                  }
-                  if (evt.getEventCase() == AnswerEvent.EventCase.ERROR) {
-                    agentErrorEventSeen.set(true);
-                    log.warn(
-                        "ML_AGENT_ERROR_EVENT messageId={} code={} retryable={}",
+                    Duration firstEventLatency = Duration.between(startedAt, Instant.now());
+                    metrics.recordFirstResponseLatency(firstEventLatency);
+                    log.info(
+                        "ML_STREAM_STARTED messageId={} firstEvent={} firstEventLatencyMs={}",
                         messageId,
-                        evt.getError().getCode(),
-                        evt.getError().getRetryable());
+                        SseEvents.eventName(evt),
+                        firstEventLatency.toMillis());
                   }
+                  eventCounts.merge(evt.getEventCase(), 1, Integer::sum);
+                  logAgentEvent(messageId, evt, agentErrorEventSeen);
                 })
             .transformDeferred(CircuitBreakerOperator.of(circuitBreaker))
             .transformDeferred(BulkheadOperator.of(bulkhead))
@@ -194,7 +234,15 @@ public class ChatOrchestrationServiceImpl implements ChatOrchestrationService {
 
     return Flux.defer(
             () -> {
-              log.info("ML_REQUEST_STARTED messageId={}", messageId);
+              log.info(
+                  "ML_REQUEST_STARTED messageId={} client={} caseId={} firstResponseTimeoutMs={}"
+                      + " idleTimeoutMs={} maxStreamDurationMs={}",
+                  messageId,
+                  mlAgentClient.getClass().getSimpleName(),
+                  context.caseId(),
+                  mlAgentProperties.firstResponseTimeout().toMillis(),
+                  mlAgentProperties.idleTimeout().toMillis(),
+                  chatProperties.maxStreamDuration().toMillis());
               return attempt.retryWhen(buildRetrySpec(messageId, firstEventSeen));
             })
         .transform(flux -> withTotalDeadline(flux, chatProperties.maxStreamDuration()))
@@ -215,7 +263,7 @@ public class ChatOrchestrationServiceImpl implements ChatOrchestrationService {
             signalType -> {
               Duration elapsed = Duration.between(startedAt, Instant.now());
               metrics.recordStreamDuration(elapsed);
-              logMlOutcome(messageId, signalType, lastError.get(), elapsed);
+              logMlOutcome(messageId, signalType, lastError.get(), elapsed, eventCounts);
             });
   }
 
@@ -227,10 +275,11 @@ public class ChatOrchestrationServiceImpl implements ChatOrchestrationService {
         .doBeforeRetry(
             signal ->
                 log.warn(
-                    "ML_REQUEST_RETRY messageId={} attempt={} exceptionType={}",
+                    "ML_REQUEST_RETRY messageId={} retry={}/{} cause=[{}]",
                     messageId,
                     signal.totalRetries() + 1,
-                    signal.failure().getClass().getSimpleName()))
+                    retryProperties.maxAttempts(),
+                    LogSanitizer.causeChain(signal.failure())))
         // By default Reactor wraps the last failure in its own RetryExhaustedException
         // once attempts run out, which would break every instanceof-based
         // classification downstream (error mapping, metrics, logging). Propagate
@@ -294,29 +343,118 @@ public class ChatOrchestrationServiceImpl implements ChatOrchestrationService {
     }
   }
 
+  /**
+   * Every structurally meaningful agent event gets its own INFO line; {@code chunk} and {@code
+   * ping} are high-volume, so they are only counted and reported in the completion line.
+   */
+  private static void logAgentEvent(
+      String messageId, AnswerEvent evt, AtomicBoolean agentErrorEventSeen) {
+    switch (evt.getEventCase()) {
+      case TOOL_CALL ->
+          log.info(
+              "ML_EVENT_TOOL_CALL messageId={} toolCallId={} name={} argsJsonLength={}",
+              messageId,
+              evt.getToolCall().getToolCallId(),
+              evt.getToolCall().getName(),
+              evt.getToolCall().getArgsJson().length());
+      case TOOL_RESULT ->
+          log.info(
+              "ML_EVENT_TOOL_RESULT messageId={} toolCallId={} status={} ms={} rowCount={}",
+              messageId,
+              evt.getToolResult().getToolCallId(),
+              evt.getToolResult().getStatus(),
+              evt.getToolResult().getMs(),
+              evt.getToolResult().hasRowCount() ? evt.getToolResult().getRowCount() : "<unset>");
+      case PAYLOAD ->
+          log.info(
+              "ML_EVENT_PAYLOAD messageId={} payloadType={} keySignals={} citations={}",
+              messageId,
+              evt.getPayload().getPayloadCase(),
+              evt.getPayload().getCaseManagerAnswerPayload().getKeySignalsCount(),
+              evt.getPayload().getCaseManagerAnswerPayload().getCitationsCount());
+      case DONE ->
+          log.info(
+              "ML_EVENT_DONE messageId={} stopReason={} latencyMs={} tokensIn={} tokensOut={}",
+              messageId,
+              evt.getDone().getStopReason(),
+              evt.getDone().getLatencyMs(),
+              evt.getDone().getTokensIn(),
+              evt.getDone().getTokensOut());
+      case ERROR -> {
+        agentErrorEventSeen.set(true);
+        log.warn(
+            "ML_EVENT_ERROR messageId={} code={} retryable={} — forwarded to the client as-is",
+            messageId,
+            evt.getError().getCode(),
+            evt.getError().getRetryable());
+      }
+      case CHUNK, PING, EVENT_NOT_SET -> {
+        // Counted only; see the ML_STREAM_COMPLETED line.
+      }
+    }
+  }
+
   private static void logMlOutcome(
-      String messageId, SignalType signalType, Throwable error, Duration elapsed) {
+      String messageId,
+      SignalType signalType,
+      Throwable error,
+      Duration elapsed,
+      Map<AnswerEvent.EventCase, Integer> eventCounts) {
     long durationMs = elapsed.toMillis();
+    String counts;
+    synchronized (eventCounts) {
+      counts = eventCounts.toString();
+    }
     if (signalType == SignalType.ON_COMPLETE) {
-      log.info("ML_STREAM_COMPLETED messageId={} durationMs={}", messageId, durationMs);
+      log.info(
+          "ML_STREAM_COMPLETED messageId={} durationMs={} eventCounts={}",
+          messageId,
+          durationMs,
+          counts);
+    } else if (signalType == SignalType.CANCEL) {
+      log.info(
+          "ML_STREAM_CANCELLED messageId={} durationMs={} eventCounts={} — downstream cancelled"
+              + " (client disconnected), ML Agent call cancelled",
+          messageId,
+          durationMs,
+          counts);
     } else if (error instanceof MlAgentTimeoutException) {
-      log.warn("ML_REQUEST_TIMEOUT messageId={} durationMs={}", messageId, durationMs);
+      log.warn(
+          "ML_REQUEST_TIMEOUT messageId={} durationMs={} eventCounts={} cause=[{}]",
+          messageId,
+          durationMs,
+          counts,
+          LogSanitizer.causeChain(error));
     } else if (error instanceof CallNotPermittedException) {
-      log.warn("CIRCUIT_BREAKER_OPEN messageId={} durationMs={}", messageId, durationMs);
+      log.warn(
+          "CIRCUIT_BREAKER_OPEN messageId={} durationMs={} — ML Agent not called",
+          messageId,
+          durationMs);
     } else if (error instanceof BulkheadFullException) {
-      log.warn("CONCURRENCY_LIMIT_REACHED messageId={} durationMs={}", messageId, durationMs);
+      log.warn(
+          "CONCURRENCY_LIMIT_REACHED messageId={} durationMs={} — ML Agent not called",
+          messageId,
+          durationMs);
     } else if (error instanceof MlAgentRejectedException rejected) {
       log.warn(
-          "ML_AGENT_REJECTED messageId={} durationMs={} errorCode={}",
+          "ML_AGENT_REJECTED messageId={} durationMs={} errorCode={} cause=[{}]",
           messageId,
           durationMs,
-          rejected.errorCode());
+          rejected.errorCode(),
+          LogSanitizer.causeChain(error));
+    } else if (error instanceof ResponseStatusException) {
+      log.warn(
+          "CHAT_REQUEST_INVALID messageId={} cause=[{}]",
+          messageId,
+          LogSanitizer.causeChain(error));
     } else if (error != null) {
       log.error(
-          "ML_REQUEST_FAILED messageId={} durationMs={} exceptionType={}",
+          "ML_REQUEST_FAILED messageId={} durationMs={} eventCounts={} cause=[{}]",
           messageId,
           durationMs,
-          error.getClass().getSimpleName());
+          counts,
+          LogSanitizer.causeChain(error),
+          error);
     }
   }
 
@@ -353,6 +491,11 @@ public class ChatOrchestrationServiceImpl implements ChatOrchestrationService {
       code = ErrorCode.INTERNAL_ERROR;
       message = "An unexpected error occurred.";
     }
+    log.warn(
+        "SSE_SERVICE_ERROR_SENT messageId={} errorCode={} errorMessage='{}'",
+        messageId,
+        code,
+        message);
     return new ServiceErrorEvent(messageId, code, message, Instant.now());
   }
 }

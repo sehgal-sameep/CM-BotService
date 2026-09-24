@@ -384,9 +384,10 @@ thread specifically to reproduce that timing.
 Never buffers the full response (no `collectList()`/`.block()` anywhere — proven by
 the in-process gRPC tests, not just claimed), and emits each `AnswerEvent` it
 receives unchanged — the tests assert deep `equals` between what the in-process server
-sent and what the client emitted. The only per-event work is observation (DEBUG/TRACE
-logs of tool calls/results/pings, a WARN on a `payload` violating the citation
-invariant, §16) plus filtering out unset-oneof events. The initial call's gRPC
+sent and what the client emitted. The only per-event work is a WARN on a contract
+anomaly (a `payload` violating the citation invariant, §16, or an unset-oneof event,
+which is also filtered out). Per-event INFO logging is in `ChatOrchestrationServiceImpl`,
+so the mock and real clients share it. The initial call's gRPC
 `Status.Code` is still translated into `MlAgentRejectedException`/
 `MlAgentCommunicationException`/`MlAgentUnavailableException`, since a status is not an
 agent event and has nothing to forward.
@@ -619,16 +620,42 @@ concurrency, even by accident.
 
 ## 12. Logging
 
-SLF4J + Logback, color-coded console pattern (kept from the earlier iteration — see
-README). MDC keys `correlationId`/`tenantId`/`caseId`/`traceId`/`spanId` appear on
-every log line for one chatbot interaction (§11). Logical event
-names (all grep-able, see README): `CHAT_REQUEST_RECEIVED`, `ML_REQUEST_STARTED`,
-`ML_STREAM_STARTED`, `ML_STREAM_COMPLETED`, `ML_REQUEST_TIMEOUT`, `ML_REQUEST_FAILED`,
-`ML_REQUEST_RETRY`, `CIRCUIT_BREAKER_OPEN`, `CONCURRENCY_LIMIT_REACHED`,
-`SSE_CLIENT_CANCELLED`. Levels: INFO for lifecycle, WARN for timeout/retry/rejection,
-ERROR only for a genuine unexpected ML Agent failure. Never logged above DEBUG: full
-prompt/response content (`LogSanitizer.preview` truncates to ~40 chars), auth headers,
-stack traces in responses.
+SLF4J + Logback, color-coded console pattern (see README). MDC keys
+`correlationId`/`tenantId`/`caseId`/`traceId`/`spanId` appear on every log line for one
+chatbot interaction (§11). `RequestLoggingFilter` (ordered right after
+`CorrelationIdFilter`, inside its Reactor context) brackets each API request with
+`HTTP_REQUEST_RECEIVED`/`HTTP_REQUEST_COMPLETED`. Each component then logs its own step.
+
+Every API request is logged at each step, at INFO for normal progress, WARN for an
+expected rejection or degraded path, and ERROR for a failure. There are **no DEBUG or
+TRACE statements**, so the default `com.cmbotservice` level is `INFO`
+(`LOG_LEVEL_COM_CMBOTSERVICE`; set `WARN` to see only problems). Actuator, Swagger UI,
+and OpenAPI paths are not request-logged, so health probes don't bury real traffic.
+
+Filter by correlation ID to get one request's whole trail. Send
+`X-Correlation-Id: <id>`, or read the one echoed on the response, then
+`grep "corrId=<id>"`. A chat request logs, in order: `HTTP_REQUEST_RECEIVED` →
+(`BFF_SESSION`) `AUTH_CHECK_STARTED`, `REDIS_SESSION_LOOKUP_STARTED`,
+`REDIS_SESSION_RECORD_FOUND`/`_PARSED`, `AUTH_SUCCEEDED` → `REQUEST_CONTEXT_RESOLVED` →
+`CHAT_REQUEST_RECEIVED` → `GRPC_CALL_STARTED` (target host:port) or
+`MOCK_ML_AGENT_CALL_STARTED` → `ML_REQUEST_STARTED` → `ML_STREAM_STARTED` →
+`ML_EVENT_TOOL_CALL`/`_TOOL_RESULT`/`_PAYLOAD`/`_DONE`/`_ERROR` → `ML_STREAM_COMPLETED`
+(per-event-type counts; `chunk`/`ping` are counted rather than logged one by one) →
+`SSE_STREAM_COMPLETED` → `HTTP_REQUEST_COMPLETED` (status, duration).
+
+WARN/ERROR events: `AUTH_REJECTED`, `REDIS_SESSION_RECORD_NOT_FOUND`,
+`REDIS_SESSION_RECORD_INCOMPLETE`/`_UNPARSEABLE`, `REDIS_SESSION_LOOKUP_FAILED`
+(Redis endpoint, full cause chain, stack trace), `GRPC_CALL_FAILED` (gRPC status and
+description), `GRPC_EVENT_IGNORED`, `GRPC_PAYLOAD_CONTRACT_VIOLATION`,
+`ML_REQUEST_RETRY`, `ML_REQUEST_TIMEOUT`, `CIRCUIT_BREAKER_OPEN`,
+`CONCURRENCY_LIMIT_REACHED`, `ML_AGENT_REJECTED`, `ML_REQUEST_FAILED`,
+`SSE_SERVICE_ERROR_SENT`, `REQUEST_VALIDATION_FAILED`, `REQUEST_REJECTED`. At startup:
+`REDIS_SESSION_STORE_CONFIGURED`, `ML_AGENT_GRPC_CHANNEL_CONFIGURED` or
+`ML_AGENT_MOCK_CONFIGURED`.
+
+Never logged: prompt, history, or answer text (only lengths and counts, since case text
+may contain personal data), access/refresh tokens, the Redis password, or the raw
+session ID (only masked by `LogSanitizer.maskSecret`, e.g. `****cdef(len=29)`).
 
 ## 13. Metrics
 
@@ -703,7 +730,7 @@ propagate to the frontend by design (§5).
 This backend no longer judges the content of the agent's events; it forwards them.
 An unset (or unrecognised) `event` oneof case is ignored per the contract ("clients
 MUST ignore events whose `event` oneof is unset or unrecognised and continue reading
-the stream" — logged at DEBUG, stream continues). The contract's `payload` invariant
+the stream" — logged at WARN as `GRPC_EVENT_IGNORED`, stream continues). The contract's `payload` invariant
 (every `key_signal` carries ≥1 citation) and a `payload` with no recognised arm are
 reported as WARN logs by `GrpcMlAgentClient` but the event is still forwarded as-is —
 rejecting the whole answer would be this backend overriding the agent's response, and
