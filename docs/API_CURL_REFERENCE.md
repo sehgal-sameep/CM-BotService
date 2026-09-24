@@ -27,6 +27,7 @@ you:
 | `ML_AGENT_GRPC_CHANNEL_CONFIGURED target=<host>:<port>` | `ml-agent.mode=grpc`: requests go to the real TF Labs orchestrator |
 | the `chatbot.security.mode = NONE` banner | no authentication; send `X-User-Id` instead of a cookie |
 | `REDIS_SESSION_STORE_CONFIGURED endpoint=<host>:<port> (...)` | `chatbot.security.mode=BFF_SESSION`: the chat endpoint needs a `SESSION` cookie, and the debug endpoint exists |
+| `REDIS_SESSION_STORE_REACHABLE` / `_UNREACHABLE` | a few seconds after startup: whether that Redis actually answered a PING (connection, TLS, and Entra ID token included) |
 
 **Shell syntax.** The examples use Git Bash / macOS / Linux syntax (`\` line
 continuation, single-quoted JSON). On Windows:

@@ -118,7 +118,7 @@ browser's forbidden-header rule.
 | `400 VALIDATION_ERROR` | The `SESSION` cookie or `X-Tenant-Id` header didn't reach the server (see "Why Swagger UI fails" above), or was blank. |
 | `401 UNAUTHENTICATED` | Both values arrived, but no Redis record exists for that pair. Check that the tenant matches the session's tenant, that the session hasn't expired in the BFF, and that this service points at the same Redis as the BFF. |
 | `404` | The app isn't running in `chatbot.security.mode: BFF_SESSION`. |
-| `503 SESSION_STORE_UNAVAILABLE` | Redis is unreachable. Check the `REDIS_SESSION_LOOKUP_FAILED` log line: its `endpoint=` shows the host/port/TLS/auth mode actually in use, and the last entry of `causeChain` is the real reason (connection refused, timeout, TLS handshake, auth). |
+| `503 SESSION_STORE_UNAVAILABLE` | Redis is unreachable. First check the startup line `REDIS_SESSION_STORE_REACHABLE`/`_UNREACHABLE`, which PINGs Redis (including the Entra ID token fetch) as soon as the app is up. Check the `REDIS_SESSION_LOOKUP_FAILED` log line: its `endpoint=` shows the host/port/TLS/auth mode actually in use, and the last entry of `causeChain` is the real reason (connection refused, timeout, TLS handshake, auth). |
 
 ## Handle the output carefully
 

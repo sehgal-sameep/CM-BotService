@@ -71,6 +71,44 @@ class JsonBlobSessionStoreTest {
   }
 
   @Test
+  void redisCall_isSubscribedOffTheEventLoop_soBlockingCredentialFetchesAreAllowed() {
+    // Regression: with Entra ID auth, Lettuce's lazy first connect calls
+    // AzureRedisCredentials.getPassword(), which does Mono.block() for the token. That
+    // happens synchronously when the Redis Mono is subscribed. Subscribed on a WebFlux
+    // event-loop (non-blocking) thread, Reactor throws "block()/blockFirst()/blockLast()
+    // are blocking, which is not supported in thread reactor-http-nio-N".
+    String contextJson = "{\"username\":\"alice\",\"tenantId\":\"tenant-1\"}";
+    String record = envelope(contextJson, "at-1", "rt-1", "fp-1");
+    java.util.concurrent.atomic.AtomicReference<String> redisSubscriptionThread =
+        new java.util.concurrent.atomic.AtomicReference<>();
+    java.util.concurrent.atomic.AtomicBoolean blockingForbiddenThere =
+        new java.util.concurrent.atomic.AtomicBoolean(true);
+    when(valueOperations.get("session:abc123:tenant-1"))
+        .thenReturn(
+            // Runs when the Redis Mono is subscribed — where Lettuce's lazy connect (and
+            // the Entra ID token fetch's block()) happens in production.
+            Mono.fromCallable(
+                () -> {
+                  redisSubscriptionThread.set(Thread.currentThread().getName());
+                  blockingForbiddenThere.set(
+                      reactor.core.scheduler.Schedulers.isInNonBlockingThread());
+                  return record;
+                }));
+
+    // Subscribe from a non-blocking thread, exactly like a request on reactor-http-nio.
+    Mono<SessionContext> lookup =
+        Mono.defer(() -> store.findSession("abc123", "tenant-1"))
+            .subscribeOn(reactor.core.scheduler.Schedulers.parallel());
+
+    StepVerifier.create(lookup)
+        .expectNextMatches(session -> session.username().equals("alice"))
+        .verifyComplete();
+    org.assertj.core.api.Assertions.assertThat(blockingForbiddenThere.get())
+        .as("Redis call subscribed on %s, where block() is forbidden", redisSubscriptionThread)
+        .isFalse();
+  }
+
+  @Test
   void sessionFound_parsesEnvelopeAndNestedContextJson() {
     String contextJson = "{\"username\":\"alice\",\"tenantId\":\"tenant-1\"}";
     when(valueOperations.get("session:abc123:tenant-1"))

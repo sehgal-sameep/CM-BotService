@@ -650,8 +650,9 @@ description), `GRPC_EVENT_IGNORED`, `GRPC_PAYLOAD_CONTRACT_VIOLATION`,
 `ML_REQUEST_RETRY`, `ML_REQUEST_TIMEOUT`, `CIRCUIT_BREAKER_OPEN`,
 `CONCURRENCY_LIMIT_REACHED`, `ML_AGENT_REJECTED`, `ML_REQUEST_FAILED`,
 `SSE_SERVICE_ERROR_SENT`, `REQUEST_VALIDATION_FAILED`, `REQUEST_REJECTED`. At startup:
-`REDIS_SESSION_STORE_CONFIGURED`, `ML_AGENT_GRPC_CHANNEL_CONFIGURED` or
-`ML_AGENT_MOCK_CONFIGURED`.
+`REDIS_SESSION_STORE_CONFIGURED`, then (in the background, non-fatal)
+`REDIS_SESSION_STORE_REACHABLE` or `REDIS_SESSION_STORE_UNREACHABLE` with the cause chain,
+and `ML_AGENT_GRPC_CHANNEL_CONFIGURED` or `ML_AGENT_MOCK_CONFIGURED`.
 
 Never logged: prompt, history, or answer text (only lengths and counts, since case text
 may contain personal data), access/refresh tokens, the Redis password, or the raw
@@ -811,6 +812,20 @@ behaviorally-identical type would be exactly the unnecessary abstraction the bri
 warned against.
 
 ## 20. Authentication (BFF Session)
+
+**Threading constraint (Entra ID):** Spring Data Redis opens the shared Lettuce
+connection lazily and synchronously, inside the first subscription to a Redis command.
+With `spring.data.redis.azure.passwordless-enabled: true`, that connect calls
+`AzureRedisCredentials.getPassword()`, which fetches the token with `Mono.block()`.
+Reactor forbids blocking on WebFlux event-loop threads, so a lookup subscribed on
+`reactor-http-nio-*` failed with `IllegalStateException: block()/blockFirst()/blockLast()
+are blocking` (surfacing as "Unable to connect to Redis" and a 503). Plain-password
+Redis masked this: nothing called `block()`, though the connect still stalled the event
+loop. `JsonBlobSessionStore` therefore subscribes the Redis call on
+`Schedulers.boundedElastic()`, pinned by
+`JsonBlobSessionStoreTest#redisCall_isSubscribedOffTheEventLoop_...`.
+`RedisConnectivityCheck` opens the connection once at startup (also off the event loop)
+and logs `REDIS_SESSION_STORE_REACHABLE`/`_UNREACHABLE`.
 
 Per a documented flow (`docs/chatbot_auth_redis_lookup.png`) requiring this backend to
 validate an existing BFF-issued session rather than authenticate independently —

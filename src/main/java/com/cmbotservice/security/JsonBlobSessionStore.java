@@ -13,6 +13,7 @@ import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 /**
  * Default, confirmed {@link SessionStore}: the FMC-PM-BFF session is one JSON document at key
@@ -78,6 +79,15 @@ public class JsonBlobSessionStore implements SessionStore {
           return redisTemplate
               .opsForValue()
               .get(key)
+              // Subscribe off the WebFlux event loop. Spring Data Redis opens the shared
+              // Lettuce connection lazily and synchronously on first use (and again after
+              // a reconnect), inside this subscription. With Entra ID auth that connect
+              // calls AzureRedisCredentials.getPassword(), which does Mono.block() for the
+              // token — forbidden on reactor-http-nio threads ("block()/blockFirst()/
+              // blockLast() are blocking, which is not supported in thread ..."). Even
+              // with a plain password, the TCP+TLS connect would stall the event loop.
+              // Once connected, Lettuce's commands are non-blocking; the hop is cheap.
+              .subscribeOn(Schedulers.boundedElastic())
               .doOnNext(
                   json ->
                       log.info(
