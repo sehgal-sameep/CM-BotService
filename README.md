@@ -233,7 +233,7 @@ curl -N -X POST "http://localhost:8080/api/v1/chat/messages" \
 | `chatbot.security.redis.namespace` / `.strategy` / `.field-names.*` | Key prefix (default `session`, giving `session:<sessionId>:<tenant>`), the `SessionStore` bean to select, and the session envelope's field names (`context-json`/`access-token`/`refresh-token`/`fingerprint`, default `context_json`/`access_token`/`refresh_token`/`fp`) |
 | `spring.data.redis.host` / `.port` / `.ssl.enabled` / `.password` | The shared Redis connection itself (Boot-managed, not `chatbot.security.*`) — local default `localhost:6379`, no TLS |
 | `spring.data.redis.azure.passwordless-enabled` | `true` in a shared/prod environment: authenticates to Azure Cache for Redis via Entra ID/managed identity instead of a password (`spring-cloud-azure-starter-data-redis-lettuce`) |
-| `chatbot.security.cors.allowed-origins` | Explicit FMC UI origins allowed with credentials — no wildcard, ever |
+| `chatbot.security.cors.allowed-origins` (`CORS_ALLOWED_ORIGINS`) | CORS, in every security mode. Default `*` (also: unset/empty) allows **any** origin with credentials, so browsers never get a CORS error. Set a comma-separated list of origins/patterns (e.g. `https://*.example.com,http://localhost:*`) to restrict it. |
 | `chatbot.security.fail-open-on-redis-error` | Insecure local-dev-only escape hatch (default `false`): permit the request through, unauthenticated, if Redis is unreachable instead of rejecting with 503 |
 
 See `docs/ARCHITECTURE.md`'s Authentication section for the full flow rationale and

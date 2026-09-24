@@ -776,7 +776,7 @@ only on the interface, never a mode check.
 ```
 com.cmbotservice
  ├─ config/     MlAgentProperties, ResilienceProperties, ChatProperties,
- │               GrpcChannelConfig, ResilienceConfig, OpenApiConfig
+ │               GrpcChannelConfig, ResilienceConfig, OpenApiConfig, CorsConfig
  ├─ context/    RequestContext, RequestContextResolver (interface),
  │               HeaderBasedRequestContextResolver (mode: NONE), RequestHeaders,
  │               CorrelationIdFilter (WebFilter), MdcContext
@@ -784,7 +784,8 @@ com.cmbotservice
  │               SessionStore (interface), JsonBlobSessionStore,
  │               SessionRequestContextResolver (mode: BFF_SESSION),
  │               SessionAuthenticationWebFilter, AuthRejectionReason,
- │               SecurityModeStartupLogger, CorsSecurityConfig, RedisSessionConfig
+ │               SecurityModeStartupLogger, RedisSessionConfig, RedisEndpoint,
+ │               RedisConnectivityCheck
  ├─ web/
  │   ├─ controller/  ChatController, SessionDebugController (temporary, mode: BFF_SESSION)
  │   ├─ dto/         ChatRequest, ErrorResponse, SessionDebugResponse
@@ -869,9 +870,18 @@ unauthenticated, since a k8s prober has no session cookie):
    needed zero changes, exactly as `RequestContextResolver`'s own Javadoc anticipated
    (§17). `accessToken` is not yet forwarded anywhere — a future task wires it into the
    call to the TFLabs Orchestrator Service.
-4. CORS restricted to `chatbot.security.cors.allowed-origins` via a standard Spring
-   `CorsWebFilter`/`CorsConfiguration` (not hand-rolled), credentials allowed, no
-   wildcard. Unaffected by the scope reduction above — orthogonal concern.
+4. CORS (`config/CorsConfig`, a standard Spring `CorsWebFilter`) applies in **every**
+   security mode and, by explicit request, **allows any origin** by default, with
+   credentials. Browsers reject `Access-Control-Allow-Origin: *` alongside cookies, so
+   this uses the origin *pattern* `*`, which echoes the caller's `Origin`. The filter is
+   ordered first, ahead of `SessionAuthenticationWebFilter`, so cookie-less `OPTIONS`
+   preflights are answered before auth could 401 them, and auth rejections (401/503)
+   still carry CORS headers. `X-Correlation-Id` is exposed to the frontend.
+   `chatbot.security.cors.allowed-origins` (`CORS_ALLOWED_ORIGINS`) narrows it to a list
+   of origins or patterns. **Trade-off accepted:** with every origin allowed and the
+   session cookie sent, any site a logged-in analyst visits can call this API as that
+   analyst (bounded in practice by the cookie's `SameSite` setting). Set
+   `CORS_ALLOWED_ORIGINS` wherever that matters.
 
 **Temporary verification endpoint**: `GET /api/v1/debug/session-lookup`
 (`SessionDebugController`, `docs/ARCHITECTURE.md` §19's `web/controller/` list) reuses
