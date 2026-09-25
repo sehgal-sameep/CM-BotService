@@ -6,8 +6,7 @@ import com.cmbotservice.context.CorrelationIdFilter;
 import com.cmbotservice.web.dto.ErrorResponse;
 import jakarta.validation.ConstraintViolationException;
 import java.util.stream.Collectors;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -28,9 +27,8 @@ import org.springframework.web.server.ServerWebExchange;
  * for the truly unexpected.
  */
 @RestControllerAdvice
+@Slf4j
 public class GlobalExceptionHandler {
-
-  private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
   @ExceptionHandler(WebExchangeBindException.class)
   public ResponseEntity<ErrorResponse> handleValidation(

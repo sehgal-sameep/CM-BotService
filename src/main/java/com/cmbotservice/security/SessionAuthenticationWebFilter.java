@@ -10,8 +10,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.lettuce.core.RedisException;
 import java.nio.charset.StandardCharsets;
 import java.util.Optional;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
@@ -56,9 +55,8 @@ import reactor.core.publisher.Mono;
 @Component
 @ConditionalOnProperty(prefix = "chatbot.security", name = "mode", havingValue = "BFF_SESSION")
 @Order(Ordered.HIGHEST_PRECEDENCE + 10)
+@Slf4j
 public class SessionAuthenticationWebFilter implements WebFilter {
-
-  private static final Logger log = LoggerFactory.getLogger(SessionAuthenticationWebFilter.class);
 
   private final SessionStore sessionStore;
   private final SecurityProperties properties;

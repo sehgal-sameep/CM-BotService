@@ -2,8 +2,7 @@ package com.cmbotservice.context;
 
 import java.time.Duration;
 import java.time.Instant;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpHeaders;
@@ -29,9 +28,8 @@ import reactor.core.publisher.SignalType;
  */
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE + 1)
+@Slf4j
 public class RequestLoggingFilter implements WebFilter {
-
-  private static final Logger log = LoggerFactory.getLogger(RequestLoggingFilter.class);
 
   private static final String SESSION_COOKIE = "SESSION";
 

@@ -1,7 +1,6 @@
 package com.cmbotservice.context;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
@@ -22,10 +21,8 @@ import org.springframework.web.server.ServerWebExchange;
     name = "mode",
     havingValue = "NONE",
     matchIfMissing = true)
+@Slf4j
 public class HeaderBasedRequestContextResolver implements RequestContextResolver {
-
-  private static final Logger log =
-      LoggerFactory.getLogger(HeaderBasedRequestContextResolver.class);
 
   private static final String UNKNOWN_USER = "unknown-user";
 

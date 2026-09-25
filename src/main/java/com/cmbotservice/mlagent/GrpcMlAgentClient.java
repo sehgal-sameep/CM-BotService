@@ -16,8 +16,7 @@ import io.grpc.Status;
 import io.grpc.stub.ClientCallStreamObserver;
 import io.grpc.stub.ClientResponseObserver;
 import java.util.concurrent.atomic.AtomicReference;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
@@ -53,9 +52,8 @@ import reactor.core.publisher.FluxSink;
  */
 @Component
 @ConditionalOnProperty(prefix = "ml-agent", name = "mode", havingValue = "grpc")
+@Slf4j
 public class GrpcMlAgentClient implements MlAgentClient {
-
-  private static final Logger log = LoggerFactory.getLogger(GrpcMlAgentClient.class);
 
   private final ChatAgentGrpc.ChatAgentStub chatAgentStub;
 

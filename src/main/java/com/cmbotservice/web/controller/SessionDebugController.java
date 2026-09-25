@@ -17,8 +17,7 @@ import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.data.redis.RedisConnectionFailureException;
 import org.springframework.http.ResponseEntity;
@@ -49,9 +48,8 @@ import reactor.core.publisher.Mono;
         "TEMPORARY verification/debug endpoints — not part of this service's stable API, and not "
             + "intended to survive once the real authentication flow no longer needs manual "
             + "verification.")
+@Slf4j
 public class SessionDebugController {
-
-  private static final Logger log = LoggerFactory.getLogger(SessionDebugController.class);
 
   /** Matches {@code chatbot.security.session.cookie-name}'s default. */
   private static final String SESSION_COOKIE_NAME = "SESSION";

@@ -36,8 +36,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.stereotype.Service;
@@ -68,9 +67,8 @@ import reactor.util.retry.Retry;
  * stores, or replays that transcript itself.
  */
 @Service
+@Slf4j
 public class ChatOrchestrationServiceImpl implements ChatOrchestrationService {
-
-  private static final Logger log = LoggerFactory.getLogger(ChatOrchestrationServiceImpl.class);
 
   private final MlAgentClient mlAgentClient;
   private final CircuitBreaker circuitBreaker;

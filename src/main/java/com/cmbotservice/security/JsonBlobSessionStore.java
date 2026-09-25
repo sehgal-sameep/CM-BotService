@@ -6,8 +6,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Duration;
 import java.time.Instant;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.stereotype.Component;
@@ -46,9 +45,8 @@ import reactor.core.scheduler.Schedulers;
     name = "strategy",
     havingValue = "json-blob",
     matchIfMissing = true)
+@Slf4j
 public class JsonBlobSessionStore implements SessionStore {
-
-  private static final Logger log = LoggerFactory.getLogger(JsonBlobSessionStore.class);
 
   private final ReactiveStringRedisTemplate redisTemplate;
   private final SecurityProperties properties;

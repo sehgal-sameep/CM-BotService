@@ -15,8 +15,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
@@ -49,9 +48,8 @@ import reactor.core.publisher.Mono;
     name = "mode",
     havingValue = "mock",
     matchIfMissing = true)
+@Slf4j
 public class MockMlAgentClient implements MlAgentClient {
-
-  private static final Logger log = LoggerFactory.getLogger(MockMlAgentClient.class);
 
   private static final String SUMMARY_RESPONSE =
       "This case was created because the transaction triggered multiple fraud "

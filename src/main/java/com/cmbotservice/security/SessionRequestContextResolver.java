@@ -4,8 +4,7 @@ import com.cmbotservice.context.CorrelationIdFilter;
 import com.cmbotservice.context.RequestContext;
 import com.cmbotservice.context.RequestContextResolver;
 import com.cmbotservice.context.RequestHeaders;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import org.springframework.web.server.ServerWebExchange;
@@ -23,9 +22,8 @@ import org.springframework.web.server.ServerWebExchange;
  */
 @Component
 @ConditionalOnProperty(prefix = "chatbot.security", name = "mode", havingValue = "BFF_SESSION")
+@Slf4j
 public class SessionRequestContextResolver implements RequestContextResolver {
-
-  private static final Logger log = LoggerFactory.getLogger(SessionRequestContextResolver.class);
 
   private static final String UNKNOWN_USER = "unknown-user";
 

@@ -1,7 +1,6 @@
 package com.cmbotservice.config;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.method.HandlerTypePredicate;
 import org.springframework.web.reactive.config.PathMatchConfigurer;
@@ -13,9 +12,8 @@ import org.springframework.web.reactive.config.WebFluxConfigurer;
  * controllers (Swagger UI, {@code /v3/api-docs}) and actuator stay at their usual paths.
  */
 @Configuration
+@Slf4j
 public class ApiPathConfig implements WebFluxConfigurer {
-
-  private static final Logger log = LoggerFactory.getLogger(ApiPathConfig.class);
 
   private static final String CONTROLLER_PACKAGE = "com.cmbotservice.web.controller";
 

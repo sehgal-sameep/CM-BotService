@@ -1,8 +1,7 @@
 package com.cmbotservice.security;
 
 import jakarta.annotation.PostConstruct;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -16,9 +15,8 @@ import org.springframework.stereotype.Component;
  */
 @Component
 @ConditionalOnProperty(prefix = "chatbot.security", name = "mode", havingValue = "BFF_SESSION")
+@Slf4j
 public class RedisEndpoint {
-
-  private static final Logger log = LoggerFactory.getLogger(RedisEndpoint.class);
 
   private final String description;
 

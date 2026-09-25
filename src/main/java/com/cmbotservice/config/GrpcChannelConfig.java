@@ -5,8 +5,7 @@ import io.grpc.ManagedChannel;
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
 import jakarta.annotation.PreDestroy;
 import java.util.concurrent.TimeUnit;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -30,9 +29,8 @@ import org.springframework.context.annotation.Configuration;
  */
 @Configuration
 @ConditionalOnProperty(prefix = "ml-agent", name = "mode", havingValue = "grpc")
+@Slf4j
 public class GrpcChannelConfig {
-
-  private static final Logger log = LoggerFactory.getLogger(GrpcChannelConfig.class);
 
   private ManagedChannel channel;
 

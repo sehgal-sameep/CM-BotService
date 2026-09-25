@@ -4,8 +4,7 @@ import com.cmbotservice.common.LogSanitizer;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Optional;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
@@ -30,9 +29,8 @@ import reactor.core.scheduler.Schedulers;
  */
 @Component
 @ConditionalOnProperty(prefix = "chatbot.security", name = "mode", havingValue = "BFF_SESSION")
+@Slf4j
 public class RedisConnectivityCheck {
-
-  private static final Logger log = LoggerFactory.getLogger(RedisConnectivityCheck.class);
 
   private static final Duration TIMEOUT = Duration.ofSeconds(30);
 
