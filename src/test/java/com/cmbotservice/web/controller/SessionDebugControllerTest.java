@@ -45,7 +45,7 @@ class SessionDebugControllerTest {
 
     restTestClient
         .get()
-        .uri("/api/v1/debug/session-lookup")
+        .uri("/back-office-ai/api/v1/debug/session-lookup")
         .header("Cookie", "SESSION=abc123")
         .header("X-Tenant-Id", "tenant-1")
         .exchange()
@@ -72,7 +72,7 @@ class SessionDebugControllerTest {
 
     restTestClient
         .get()
-        .uri("/api/v1/debug/session-lookup")
+        .uri("/back-office-ai/api/v1/debug/session-lookup")
         .header("Cookie", "SESSION=missing")
         .header("X-Tenant-Id", "tenant-1")
         .exchange()

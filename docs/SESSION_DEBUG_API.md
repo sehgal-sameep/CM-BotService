@@ -49,7 +49,7 @@ The same limitation applies to `POST /api/v1/chat/messages` in `BFF_SESSION` mod
 **Git Bash / macOS / Linux:**
 
 ```bash
-curl -i "http://localhost:8080/api/v1/debug/session-lookup" \
+curl -i "http://localhost:8080/back-office-ai/api/v1/debug/session-lookup" \
   -H "Cookie: SESSION=<session value>" \
   -H "X-Tenant-Id: <tenant>"
 ```
@@ -57,7 +57,7 @@ curl -i "http://localhost:8080/api/v1/debug/session-lookup" \
 `--cookie` is equivalent:
 
 ```bash
-curl -i "http://localhost:8080/api/v1/debug/session-lookup" \
+curl -i "http://localhost:8080/back-office-ai/api/v1/debug/session-lookup" \
   --cookie "SESSION=<session value>" \
   -H "X-Tenant-Id: <tenant>"
 ```
@@ -67,7 +67,7 @@ an alias for `Invoke-WebRequest`, which takes different arguments. Put each argu
 one line, or use PowerShell's backtick for line continuation instead of `\`:
 
 ```powershell
-curl.exe -i "http://localhost:8080/api/v1/debug/session-lookup" `
+curl.exe -i "http://localhost:8080/back-office-ai/api/v1/debug/session-lookup" `
   -H "Cookie: SESSION=<session value>" `
   -H "X-Tenant-Id: <tenant>"
 ```
@@ -75,7 +75,7 @@ curl.exe -i "http://localhost:8080/api/v1/debug/session-lookup" `
 **Windows cmd.exe:** one line, or `^` for continuation:
 
 ```bat
-curl -i "http://localhost:8080/api/v1/debug/session-lookup" -H "Cookie: SESSION=<session value>" -H "X-Tenant-Id: <tenant>"
+curl -i "http://localhost:8080/back-office-ai/api/v1/debug/session-lookup" -H "Cookie: SESSION=<session value>" -H "X-Tenant-Id: <tenant>"
 ```
 
 Add `-H "X-Correlation-Id: <any id>"` to find this request in the logs easily. The

@@ -217,7 +217,7 @@ Every stream ends with exactly one of `done`, `error`, or `service_error`.
 **Turn 1 — analyst opens a new chat:**
 
 ```bash
-curl -N -X POST http://localhost:8080/api/v1/chat/messages \
+curl -N -X POST http://localhost:8080/back-office-ai/api/v1/chat/messages \
   -H "Content-Type: application/json" -H "Accept: text/event-stream" \
   -H "X-Tenant-Id: tenant-42" -H "X-Org-Id: org-7" \
   -d '{"caseId":"case-1001","message":"Summarize this case for me"}'
@@ -274,7 +274,7 @@ for you.
 **Turn 2 — follow-up question, same conversation:**
 
 ```bash
-curl -N -X POST http://localhost:8080/api/v1/chat/messages \
+curl -N -X POST http://localhost:8080/back-office-ai/api/v1/chat/messages \
   -H "Content-Type: application/json" -H "Accept: text/event-stream" \
   -H "X-Tenant-Id: tenant-42" -H "X-Org-Id: org-7" \
   -d '{"caseId":"case-1001","history":[{"role":"user","content":"Summarize this case for me"},{"role":"assistant","content":"This case was..."}],"message":"Which rules were triggered?"}'

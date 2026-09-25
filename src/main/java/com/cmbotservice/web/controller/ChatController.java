@@ -126,7 +126,7 @@ public class ChatController {
                     arrive in real time, use curl instead:
 
                     ```
-                    curl -N -X POST "http://localhost:8080/api/v1/chat/messages" \\
+                    curl -N -X POST "http://localhost:8080/back-office-ai/api/v1/chat/messages" \\
                       -H "Content-Type: application/json" \\
                       -H "Accept: text/event-stream" \\
                       -H "X-User-Id: analyst-1" \\

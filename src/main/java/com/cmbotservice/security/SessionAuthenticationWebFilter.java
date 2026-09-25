@@ -1,6 +1,7 @@
 package com.cmbotservice.security;
 
 import com.cmbotservice.common.LogSanitizer;
+import com.cmbotservice.config.ApiProperties;
 import com.cmbotservice.context.CorrelationIdFilter;
 import com.cmbotservice.web.ApiPaths;
 import com.cmbotservice.web.dto.ErrorResponse;
@@ -62,12 +63,17 @@ public class SessionAuthenticationWebFilter implements WebFilter {
   private final SessionStore sessionStore;
   private final SecurityProperties properties;
   private final ObjectMapper objectMapper;
+  private final String chatMessagesPath;
 
   public SessionAuthenticationWebFilter(
-      SessionStore sessionStore, SecurityProperties properties, ObjectMapper objectMapper) {
+      SessionStore sessionStore,
+      SecurityProperties properties,
+      ObjectMapper objectMapper,
+      ApiProperties apiProperties) {
     this.sessionStore = sessionStore;
     this.properties = properties;
     this.objectMapper = objectMapper;
+    this.chatMessagesPath = apiProperties.fullPath(ApiPaths.CHAT_MESSAGES);
   }
 
   @Override
@@ -76,7 +82,7 @@ public class SessionAuthenticationWebFilter implements WebFilter {
     // probes, Swagger UI, etc. must stay reachable without a BFF session (a k8s
     // liveness/readiness prober has no browser session cookie to send), so only
     // the one real chat endpoint is actually gated here.
-    if (!ApiPaths.CHAT_MESSAGES.equals(exchange.getRequest().getPath().value())) {
+    if (!chatMessagesPath.equals(exchange.getRequest().getPath().value())) {
       return chain.filter(exchange);
     }
 

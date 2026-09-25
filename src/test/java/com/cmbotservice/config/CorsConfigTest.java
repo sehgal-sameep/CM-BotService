@@ -37,7 +37,7 @@ class CorsConfigTest {
   private static RestTestClient.ResponseSpec preflight(RestTestClient client) {
     return client
         .method(HttpMethod.OPTIONS)
-        .uri("/api/v1/chat/messages")
+        .uri("/back-office-ai/api/v1/chat/messages")
         .header(HttpHeaders.ORIGIN, ANY_ORIGIN)
         .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "POST")
         .header(
@@ -79,7 +79,7 @@ class CorsConfigTest {
       // request and DevTools shows a CORS error with no response headers.
       client
           .method(HttpMethod.OPTIONS)
-          .uri("/api/v1/chat/messages")
+          .uri("/back-office-ai/api/v1/chat/messages")
           .header(HttpHeaders.ORIGIN, ANY_ORIGIN)
           .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "POST")
           .header("Access-Control-Request-Private-Network", "true")
@@ -96,7 +96,7 @@ class CorsConfigTest {
     void actualRequestFromAnyOrigin_carriesCorsHeaders_andExposesCorrelationId() {
       client
           .post()
-          .uri("/api/v1/chat/messages")
+          .uri("/back-office-ai/api/v1/chat/messages")
           .header(HttpHeaders.ORIGIN, ANY_ORIGIN)
           .header(RequestHeaders.TENANT_ID, "tenant-1")
           .header(RequestHeaders.ORGANIZATION_ID, "org-1")
@@ -146,7 +146,7 @@ class CorsConfigTest {
     void authRejection_stillCarriesCorsHeaders_soTheFrontendSeesThe401() {
       client
           .post()
-          .uri("/api/v1/chat/messages")
+          .uri("/back-office-ai/api/v1/chat/messages")
           .header(HttpHeaders.ORIGIN, ANY_ORIGIN)
           .header(RequestHeaders.TENANT_ID, "tenant-1")
           .header(RequestHeaders.ORGANIZATION_ID, "org-1")

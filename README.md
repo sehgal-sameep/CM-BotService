@@ -93,7 +93,10 @@ The app starts on `http://localhost:8080` with the mock ML Agent active by defau
 
 ## The one endpoint
 
-`POST /api/v1/chat/messages` — send a message (predefined prompt or free text),
+All controller endpoints are served under a common base path, `chatbot.api.base-path`
+(env `API_BASE_PATH`, default `/back-office-ai`); actuator and Swagger are not prefixed.
+
+`POST /back-office-ai/api/v1/chat/messages` — send a message (predefined prompt or free text),
 stream the ML Agent's response back as SSE. `tenantId`/`organization` travel as the
 required `X-Tenant-Id`/`X-Org-Id` request headers (not the body); `caseId`/
 `history` travel in the JSON body, not the URL — there's no backend-owned resource to
@@ -120,7 +123,7 @@ needed.
 ### 1. Start a new conversation
 
 ```bash
-curl -N -X POST "http://localhost:8080/api/v1/chat/messages" \
+curl -N -X POST "http://localhost:8080/back-office-ai/api/v1/chat/messages" \
   -H "Content-Type: application/json" \
   -H "Accept: text/event-stream" \
   -H "X-User-Id: analyst-1" \
@@ -138,7 +141,7 @@ whether the agent cut generation short (`STOP_REASON_TRUNCATED`).
 Resend the transcript so far as `history`, appended with the new message:
 
 ```bash
-curl -N -X POST "http://localhost:8080/api/v1/chat/messages" \
+curl -N -X POST "http://localhost:8080/back-office-ai/api/v1/chat/messages" \
   -H "Content-Type: application/json" \
   -H "X-Tenant-Id: tenant-42" \
   -H "X-Org-Id: org-7" \
@@ -164,10 +167,10 @@ curl -N -X POST ".../chat/messages" -H "Content-Type: application/json" -H "X-Te
 ### 4. Request validation
 
 ```bash
-curl -s -X POST "http://localhost:8080/api/v1/chat/messages" -H "Content-Type: application/json" -H "X-Tenant-Id: t" -H "X-Org-Id: o" -d '{"caseId":"bad id!","message":"hi"}'
+curl -s -X POST "http://localhost:8080/back-office-ai/api/v1/chat/messages" -H "Content-Type: application/json" -H "X-Tenant-Id: t" -H "X-Org-Id: o" -d '{"caseId":"bad id!","message":"hi"}'
 # -> 400 VALIDATION_ERROR: "caseId: caseId may only contain letters, digits, '_' and '-'" (caseId itself is optional)
 
-curl -s -X POST "http://localhost:8080/api/v1/chat/messages" -H "Content-Type: application/json" -H "X-Org-Id: o" -d '{"caseId":"c","message":"hi"}'
+curl -s -X POST "http://localhost:8080/back-office-ai/api/v1/chat/messages" -H "Content-Type: application/json" -H "X-Org-Id: o" -d '{"caseId":"c","message":"hi"}'
 # -> 400 VALIDATION_ERROR: "X-Tenant-Id header must not be blank" (missing entirely, same result)
 ```
 
@@ -178,9 +181,9 @@ couple of `trigger:error` calls will open it. Each call makes up to 4 attempts (
 retries, since nothing has streamed yet), and every attempt counts toward the breaker:
 
 ```bash
-for i in 1 2 3 4 5; do curl -s -o /dev/null -X POST "http://localhost:8080/api/v1/chat/messages" -H "Content-Type: application/json" -H "X-Tenant-Id: t" -H "X-Org-Id: o" -d '{"caseId":"c","message":"trigger:error"}'; done
+for i in 1 2 3 4 5; do curl -s -o /dev/null -X POST "http://localhost:8080/back-office-ai/api/v1/chat/messages" -H "Content-Type: application/json" -H "X-Tenant-Id: t" -H "X-Org-Id: o" -d '{"caseId":"c","message":"trigger:error"}'; done
 curl -s http://localhost:8080/actuator/circuitbreakers   # state: OPEN
-curl -N -X POST "http://localhost:8080/api/v1/chat/messages" -H "Content-Type: application/json" -H "X-Tenant-Id: t" -H "X-Org-Id: o" -d '{"caseId":"c","message":"hello"}'
+curl -N -X POST "http://localhost:8080/back-office-ai/api/v1/chat/messages" -H "Content-Type: application/json" -H "X-Tenant-Id: t" -H "X-Org-Id: o" -d '{"caseId":"c","message":"hello"}'
 # -> immediate `service_error` event, errorCode: CONCURRENCY_LIMIT_REACHED — the mock is never called
 curl -s http://localhost:8080/actuator/health/readiness  # -> still UP
 ```
@@ -214,10 +217,10 @@ a k8s liveness/readiness prober has no BFF session cookie to send.
 
 ```bash
 # mode: NONE (default) — works with no cookie at all
-curl -N -X POST "http://localhost:8080/api/v1/chat/messages" -H "Content-Type: application/json" -H "X-Tenant-Id: t" -H "X-Org-Id: o" -d '{"caseId":"c","message":"hello"}'
+curl -N -X POST "http://localhost:8080/back-office-ai/api/v1/chat/messages" -H "Content-Type: application/json" -H "X-Tenant-Id: t" -H "X-Org-Id: o" -d '{"caseId":"c","message":"hello"}'
 
 # mode: BFF_SESSION — needs only a session record to exist in Redis for this cookie+tenant
-curl -N -X POST "http://localhost:8080/api/v1/chat/messages" \
+curl -N -X POST "http://localhost:8080/back-office-ai/api/v1/chat/messages" \
   -H "Content-Type: application/json" \
   -H "Cookie: SESSION=<value>" \
   -H "X-Tenant-Id: t" \
@@ -259,7 +262,7 @@ or set the cookie on the Swagger page's origin first from DevTools
 including Windows PowerShell (`curl.exe`, not `curl`).
 
 ```bash
-curl "http://localhost:8080/api/v1/debug/session-lookup" -H "Cookie: SESSION=<value>" -H "X-Tenant-Id: t"
+curl "http://localhost:8080/back-office-ai/api/v1/debug/session-lookup" -H "Cookie: SESSION=<value>" -H "X-Tenant-Id: t"
 ```
 
 Returns `200` with `{ username, tenantId, accessToken, refreshToken, contextJson,

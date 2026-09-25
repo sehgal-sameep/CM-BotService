@@ -51,7 +51,7 @@ class ChatControllerAuthenticationTest {
   void missingSessionCookie_returns401Unauthenticated() {
     restTestClient
         .post()
-        .uri("/api/v1/chat/messages")
+        .uri("/back-office-ai/api/v1/chat/messages")
         .header(RequestHeaders.TENANT_ID, "tenant-1")
         .header(RequestHeaders.ORGANIZATION_ID, "org-1")
         .contentType(MediaType.APPLICATION_JSON)
@@ -70,7 +70,7 @@ class ChatControllerAuthenticationTest {
 
     restTestClient
         .post()
-        .uri("/api/v1/chat/messages")
+        .uri("/back-office-ai/api/v1/chat/messages")
         .header("Cookie", SESSION_COOKIE + "=abc123")
         .header(RequestHeaders.TENANT_ID, "tenant-1")
         .header(RequestHeaders.ORGANIZATION_ID, "org-1")
@@ -90,7 +90,7 @@ class ChatControllerAuthenticationTest {
 
     restTestClient
         .post()
-        .uri("/api/v1/chat/messages")
+        .uri("/back-office-ai/api/v1/chat/messages")
         .header("Cookie", SESSION_COOKIE + "=abc123")
         .header(RequestHeaders.TENANT_ID, "tenant-1")
         .header(RequestHeaders.ORGANIZATION_ID, "org-1")

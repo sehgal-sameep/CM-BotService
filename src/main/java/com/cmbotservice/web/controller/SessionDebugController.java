@@ -81,7 +81,7 @@ public class SessionDebugController {
                     Swagger UI limitation, not a server bug). Use curl instead:
 
                     ```
-                    curl -i "http://localhost:8080/api/v1/debug/session-lookup" \\
+                    curl -i "http://localhost:8080/back-office-ai/api/v1/debug/session-lookup" \\
                       -H "Cookie: SESSION=<raw session value>" \\
                       -H "X-Tenant-Id: <tenant>"
                     ```

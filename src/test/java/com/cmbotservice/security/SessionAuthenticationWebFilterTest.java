@@ -2,6 +2,7 @@ package com.cmbotservice.security;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.cmbotservice.config.ApiProperties;
 import com.cmbotservice.web.dto.ErrorResponse;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
@@ -22,6 +23,8 @@ import reactor.test.StepVerifier;
  * — a found record is authenticated outright, with no fingerprint/CSRF/permission/expiry check.
  */
 class SessionAuthenticationWebFilterTest {
+
+  private static final ApiProperties API = new ApiProperties("/back-office-ai");
 
   private static final String COOKIE_NAME = "SESSION";
   private static final String TENANT_HEADER_NAME = "X-Tenant-Id";
@@ -55,7 +58,7 @@ class SessionAuthenticationWebFilterTest {
   private static MockServerWebExchange exchangeWithSessionCookieAndTenant(
       String cookieValue, String tenant) {
     MockServerHttpRequest.BaseBuilder<?> builder =
-        MockServerHttpRequest.post("/api/v1/chat/messages");
+        MockServerHttpRequest.post("/back-office-ai/api/v1/chat/messages");
     if (cookieValue != null) {
       builder.cookie(new HttpCookie(COOKIE_NAME, cookieValue));
     }
@@ -75,7 +78,8 @@ class SessionAuthenticationWebFilterTest {
         new SessionAuthenticationWebFilter(
             store(Mono.error(new AssertionError("SessionStore must not be called"))),
             properties(false),
-            objectMapper);
+            objectMapper,
+            API);
     MockServerWebExchange exchange =
         MockServerWebExchange.from(MockServerHttpRequest.get("/actuator/health").build());
     AtomicBoolean chainInvoked = new AtomicBoolean();
@@ -98,7 +102,8 @@ class SessionAuthenticationWebFilterTest {
         new SessionAuthenticationWebFilter(
             store(Mono.error(new AssertionError("SessionStore must not be called"))),
             properties(false),
-            objectMapper);
+            objectMapper,
+            API);
     MockServerWebExchange exchange = exchangeWithSessionCookie(null);
     AtomicBoolean chainInvoked = new AtomicBoolean();
 
@@ -122,7 +127,8 @@ class SessionAuthenticationWebFilterTest {
         new SessionAuthenticationWebFilter(
             store(Mono.error(new AssertionError("SessionStore must not be called"))),
             properties(false),
-            objectMapper);
+            objectMapper,
+            API);
     MockServerWebExchange exchange = exchangeWithSessionCookieAndTenant("abc123", null);
     AtomicBoolean chainInvoked = new AtomicBoolean();
 
@@ -143,7 +149,8 @@ class SessionAuthenticationWebFilterTest {
   @Test
   void sessionNotFound_rejectsWith401Unauthenticated() {
     SessionAuthenticationWebFilter filter =
-        new SessionAuthenticationWebFilter(store(Mono.empty()), properties(false), objectMapper);
+        new SessionAuthenticationWebFilter(
+            store(Mono.empty()), properties(false), objectMapper, API);
     MockServerWebExchange exchange = exchangeWithSessionCookie("abc123");
     AtomicBoolean chainInvoked = new AtomicBoolean();
 
@@ -166,7 +173,7 @@ class SessionAuthenticationWebFilterTest {
     SessionContext session = validSession();
     SessionAuthenticationWebFilter filter =
         new SessionAuthenticationWebFilter(
-            store(Mono.just(session)), properties(false), objectMapper);
+            store(Mono.just(session)), properties(false), objectMapper, API);
     MockServerWebExchange exchange = exchangeWithSessionCookie("abc123");
     AtomicBoolean chainInvoked = new AtomicBoolean();
 
@@ -190,7 +197,8 @@ class SessionAuthenticationWebFilterTest {
         new SessionAuthenticationWebFilter(
             store(Mono.error(new io.lettuce.core.RedisConnectionException("connection refused"))),
             properties(false),
-            objectMapper);
+            objectMapper,
+            API);
     MockServerWebExchange exchange = exchangeWithSessionCookie("abc123");
     AtomicBoolean chainInvoked = new AtomicBoolean();
 
@@ -214,7 +222,8 @@ class SessionAuthenticationWebFilterTest {
         new SessionAuthenticationWebFilter(
             store(Mono.error(new io.lettuce.core.RedisConnectionException("connection refused"))),
             properties(true),
-            objectMapper);
+            objectMapper,
+            API);
     MockServerWebExchange exchange = exchangeWithSessionCookie("abc123");
     AtomicBoolean chainInvoked = new AtomicBoolean();
 
