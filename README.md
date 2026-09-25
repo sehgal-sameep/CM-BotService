@@ -164,8 +164,8 @@ curl -N -X POST ".../chat/messages" -H "Content-Type: application/json" -H "X-Te
 ### 4. Request validation
 
 ```bash
-curl -s -X POST "http://localhost:8080/api/v1/chat/messages" -H "Content-Type: application/json" -H "X-Tenant-Id: t" -H "X-Org-Id: o" -d '{"message":"hi"}'
-# -> 400 VALIDATION_ERROR: "caseId: caseId must not be blank"
+curl -s -X POST "http://localhost:8080/api/v1/chat/messages" -H "Content-Type: application/json" -H "X-Tenant-Id: t" -H "X-Org-Id: o" -d '{"caseId":"bad id!","message":"hi"}'
+# -> 400 VALIDATION_ERROR: "caseId: caseId may only contain letters, digits, '_' and '-'" (caseId itself is optional)
 
 curl -s -X POST "http://localhost:8080/api/v1/chat/messages" -H "Content-Type: application/json" -H "X-Org-Id: o" -d '{"caseId":"c","message":"hi"}'
 # -> 400 VALIDATION_ERROR: "X-Tenant-Id header must not be blank" (missing entirely, same result)

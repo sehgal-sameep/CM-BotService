@@ -230,7 +230,8 @@ public class GrpcMlAgentClient implements MlAgentClient {
             .build();
 
     AskCaseManagerRequest.CaseContext.Builder caseContext =
-        AskCaseManagerRequest.CaseContext.newBuilder().setCaseId(request.caseId());
+        AskCaseManagerRequest.CaseContext.newBuilder()
+            .setCaseId(request.caseId() == null ? "" : request.caseId());
     if (request.endUserId() != null) {
       caseContext.setEndUserId(request.endUserId());
     }

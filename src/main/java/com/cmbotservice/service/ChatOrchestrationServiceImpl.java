@@ -101,9 +101,11 @@ public class ChatOrchestrationServiceImpl implements ChatOrchestrationService {
   public Flux<ServerSentEvent<Object>> streamMessage(RequestContext context, ChatRequest request) {
     return Flux.defer(() -> doStreamMessage(context, request))
         .contextWrite(
-            ctx ->
-                ctx.put(MdcContext.TENANT_ID, context.tenantId())
-                    .put(MdcContext.CASE_ID, context.caseId()));
+            ctx -> {
+              ctx = ctx.put(MdcContext.TENANT_ID, context.tenantId());
+              // caseId is optional; Reactor Context rejects null values.
+              return context.caseId() == null ? ctx : ctx.put(MdcContext.CASE_ID, context.caseId());
+            });
   }
 
   private Flux<ServerSentEvent<Object>> doStreamMessage(

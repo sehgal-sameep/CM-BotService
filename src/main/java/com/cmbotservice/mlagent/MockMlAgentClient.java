@@ -160,7 +160,8 @@ public class MockMlAgentClient implements MlAgentClient {
                 ToolCall.newBuilder()
                     .setToolCallId(toolCallId)
                     .setName("getCase")
-                    .setArgsJson("{\"caseId\":\"" + caseId + "\"}"))
+                    .setArgsJson(
+                        caseId == null ? "{\"caseId\":null}" : "{\"caseId\":\"" + caseId + "\"}"))
             .build(),
         AnswerEvent.newBuilder()
             .setToolResult(

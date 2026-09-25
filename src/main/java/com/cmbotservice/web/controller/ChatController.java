@@ -100,8 +100,8 @@ public class ChatController {
                     message, the response, or any conversation history — nothing here persists \
                     between requests.
 
-                    `X-Tenant-Id` and `X-Org-Id` request headers, and the body's `caseId`/ \
-                    `message`, are required. The ML Agent's contract has no conversation/continuation \
+                    `X-Tenant-Id` and `X-Org-Id` request headers, and the body's `message`, are \
+                    required; `caseId` is optional. The ML Agent's contract has no conversation/continuation \
                     identifier at all — `history` is the sole resumption mechanism: omit it to start \
                     a new conversation, or resend the full transcript (oldest turn first) to continue \
                     one. `requestId` is an optional caller-generated identifier forwarded for \
@@ -161,7 +161,8 @@ public class ChatController {
   @ApiResponse(
       responseCode = "400",
       description =
-          "Validation error (e.g. blank/missing X-Tenant-Id, " + "X-Org-Id, caseId, or message)",
+          "Validation error (e.g. blank/missing X-Tenant-Id, X-Org-Id, or message, or a"
+              + " malformed caseId)",
       content = @Content(schema = @Schema(implementation = ErrorResponse.class)))
   public Flux<ServerSentEvent<Object>> sendMessage(
       @RequestBody @Valid ChatRequest request, ServerWebExchange exchange) {

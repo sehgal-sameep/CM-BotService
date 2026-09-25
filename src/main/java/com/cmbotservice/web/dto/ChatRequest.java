@@ -15,14 +15,16 @@ import java.util.List;
  * X-Org-Id} request headers instead (see {@code RequestContextResolver}), not the body.
  */
 public record ChatRequest(
-    @NotBlank(message = "caseId must not be blank")
-        @Size(max = 100, message = "caseId must be at most 100 characters")
+    @Size(max = 100, message = "caseId must be at most 100 characters")
         @Pattern(
             regexp = "^[A-Za-z0-9_-]+$",
             message = "caseId may only contain letters, digits, '_' and '-'")
         @Schema(
-            description = "Case identifier, forwarded as-is to the ML Agent.",
-            example = "case-456")
+            description =
+                "Optional case identifier, forwarded as-is to the ML Agent. Omit (or send blank) "
+                    + "for a message not tied to a case.",
+            example = "case-456",
+            requiredMode = Schema.RequiredMode.NOT_REQUIRED)
         String caseId,
     @Size(max = 50, message = "history must contain at most 50 turns")
         @Schema(
@@ -61,4 +63,12 @@ public record ChatRequest(
                     + "'trigger:slow', 'trigger:timeout', 'trigger:error', 'trigger:empty', and "
                     + "'trigger:rejected' anywhere in this text to simulate that scenario.",
             example = "Summarize this case for me")
-        String message) {}
+        String message) {
+
+  /** A blank {@code caseId} means "no case" — normalized to {@code null} before validation. */
+  public ChatRequest {
+    if (caseId != null && caseId.isBlank()) {
+      caseId = null;
+    }
+  }
+}

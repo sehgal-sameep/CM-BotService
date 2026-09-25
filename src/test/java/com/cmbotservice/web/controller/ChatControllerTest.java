@@ -172,7 +172,7 @@ class ChatControllerTest {
   }
 
   @Test
-  void missingCaseId_returns400ValidationError() {
+  void missingCaseId_isAccepted() {
     restTestClient
         .post()
         .uri("/api/v1/chat/messages")
@@ -180,6 +180,34 @@ class ChatControllerTest {
         .header(RequestHeaders.ORGANIZATION_ID, "org-1")
         .contentType(MediaType.APPLICATION_JSON)
         .body(Map.of("message", "hello"))
+        .exchange()
+        .expectStatus()
+        .isOk();
+  }
+
+  @Test
+  void blankCaseId_isAccepted() {
+    restTestClient
+        .post()
+        .uri("/api/v1/chat/messages")
+        .header(RequestHeaders.TENANT_ID, "tenant-1")
+        .header(RequestHeaders.ORGANIZATION_ID, "org-1")
+        .contentType(MediaType.APPLICATION_JSON)
+        .body(Map.of("caseId", "  ", "message", "hello"))
+        .exchange()
+        .expectStatus()
+        .isOk();
+  }
+
+  @Test
+  void invalidCaseId_returns400ValidationError() {
+    restTestClient
+        .post()
+        .uri("/api/v1/chat/messages")
+        .header(RequestHeaders.TENANT_ID, "tenant-1")
+        .header(RequestHeaders.ORGANIZATION_ID, "org-1")
+        .contentType(MediaType.APPLICATION_JSON)
+        .body(Map.of("caseId", "bad id!", "message", "hello"))
         .exchange()
         .expectStatus()
         .isBadRequest()
