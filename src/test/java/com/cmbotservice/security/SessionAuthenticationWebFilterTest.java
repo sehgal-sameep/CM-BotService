@@ -97,7 +97,7 @@ class SessionAuthenticationWebFilterTest {
   }
 
   @Test
-  void missingCookie_rejectsWith401Unauthenticated() {
+  void missingCookie_rejectsWith401SessionCookieMissing() {
     SessionAuthenticationWebFilter filter =
         new SessionAuthenticationWebFilter(
             store(Mono.error(new AssertionError("SessionStore must not be called"))),
@@ -118,11 +118,11 @@ class SessionAuthenticationWebFilterTest {
 
     assertThat(chainInvoked).isFalse();
     assertThat(exchange.getResponse().getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
-    assertThat(errorCodeOf(exchange)).isEqualTo("UNAUTHENTICATED");
+    assertThat(errorCodeOf(exchange)).isEqualTo("SESSION_COOKIE_MISSING");
   }
 
   @Test
-  void missingTenantHeader_rejectsWith401Unauthenticated() {
+  void missingTenantHeader_rejectsWith401TenantHeaderMissing() {
     SessionAuthenticationWebFilter filter =
         new SessionAuthenticationWebFilter(
             store(Mono.error(new AssertionError("SessionStore must not be called"))),
@@ -143,11 +143,13 @@ class SessionAuthenticationWebFilterTest {
 
     assertThat(chainInvoked).isFalse();
     assertThat(exchange.getResponse().getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
-    assertThat(errorCodeOf(exchange)).isEqualTo("UNAUTHENTICATED");
+    ErrorResponse body = bodyOf(exchange);
+    assertThat(body.errorCode().name()).isEqualTo("TENANT_HEADER_MISSING");
+    assertThat(body.message()).contains("'" + TENANT_HEADER_NAME + "' header");
   }
 
   @Test
-  void sessionNotFound_rejectsWith401Unauthenticated() {
+  void sessionNotFound_rejectsWith401SessionInvalidOrExpired() {
     SessionAuthenticationWebFilter filter =
         new SessionAuthenticationWebFilter(
             store(Mono.empty()), properties(false), objectMapper, API);
@@ -165,7 +167,7 @@ class SessionAuthenticationWebFilterTest {
 
     assertThat(chainInvoked).isFalse();
     assertThat(exchange.getResponse().getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
-    assertThat(errorCodeOf(exchange)).isEqualTo("UNAUTHENTICATED");
+    assertThat(errorCodeOf(exchange)).isEqualTo("SESSION_INVALID_OR_EXPIRED");
   }
 
   @Test
@@ -242,10 +244,13 @@ class SessionAuthenticationWebFilterTest {
   }
 
   private String errorCodeOf(MockServerWebExchange exchange) {
+    return bodyOf(exchange).errorCode().name();
+  }
+
+  private ErrorResponse bodyOf(MockServerWebExchange exchange) {
     try {
       String json = exchange.getResponse().getBodyAsString().block();
-      ErrorResponse body = objectMapper.readValue(json, ErrorResponse.class);
-      return body.errorCode().name();
+      return objectMapper.readValue(json, ErrorResponse.class);
     } catch (Exception e) {
       throw new RuntimeException(e);
     }

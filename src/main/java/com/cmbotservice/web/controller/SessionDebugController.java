@@ -158,7 +158,7 @@ public class SessionDebugController {
     return ResponseEntity.status(401)
         .body(
             ErrorResponse.of(
-                ErrorCode.UNAUTHENTICATED,
+                ErrorCode.SESSION_INVALID_OR_EXPIRED,
                 "No session found in Redis for the given session cookie and tenant.",
                 correlationId(exchange)));
   }

@@ -67,7 +67,7 @@ class SessionDebugControllerTest {
   }
 
   @Test
-  void sessionNotFound_returns401Unauthenticated() {
+  void sessionNotFound_returns401SessionInvalidOrExpired() {
     stubSessionStore.reset(); // no session set
 
     restTestClient
@@ -80,7 +80,7 @@ class SessionDebugControllerTest {
         .isUnauthorized()
         .expectBody()
         .jsonPath("$.errorCode")
-        .isEqualTo("UNAUTHENTICATED");
+        .isEqualTo("SESSION_INVALID_OR_EXPIRED");
   }
 
   @TestConfiguration

@@ -14,11 +14,24 @@ public enum ErrorCode {
   ML_AGENT_ERROR,
   CONCURRENCY_LIMIT_REACHED,
   /**
-   * No valid BFF session could be established for this request (missing cookie, no matching Redis
-   * record, or an expired access token) — see {@code SessionAuthenticationWebFilter}. The caller
-   * should re-authenticate with the BFF; retrying this exact request will not help.
+   * The request carried no session cookie, or the cookie was blank — see {@code
+   * SessionAuthenticationWebFilter}. The caller has not signed in (or the cookie was not forwarded)
+   * and should authenticate with the BFF before retrying.
    */
-  UNAUTHENTICATED,
+  SESSION_COOKIE_MISSING,
+  /**
+   * A session cookie was sent but the tenant header, which is part of the session key, was missing
+   * or blank. This is a client integration defect rather than an expired login; fix the request
+   * rather than re-authenticating.
+   */
+  TENANT_HEADER_MISSING,
+  /**
+   * Both the session cookie and tenant header arrived, but no usable session exists for that pair —
+   * the session expired or was signed out, the cookie value is wrong, the tenant does not match the
+   * session's tenant, or the stored record is malformed. The caller should re-authenticate with the
+   * BFF; retrying this exact request will not help.
+   */
+  SESSION_INVALID_OR_EXPIRED,
   /**
    * A session was found and is still valid, but the request itself is rejected — CSRF mismatch,
    * tenant mismatch, or no {@code CHATBOT_}-prefixed permissions.
@@ -26,8 +39,8 @@ public enum ErrorCode {
   FORBIDDEN,
   /**
    * The shared Redis session store was unreachable, so no authentication decision could be made at
-   * all. Distinct from {@link #UNAUTHENTICATED} because this is an infrastructure outage, not a
-   * claim about the caller's identity.
+   * all. Distinct from {@link #SESSION_INVALID_OR_EXPIRED} because this is an infrastructure
+   * outage, not a claim about the caller's identity.
    */
   SESSION_STORE_UNAVAILABLE,
   INTERNAL_ERROR

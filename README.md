@@ -207,8 +207,8 @@ curl -s http://localhost:8080/actuator/health/readiness  # -> still UP
   calls for all four — see `docs/ARCHITECTURE.md` §20 if that scope needs to come back.
   The session's `access_token` is carried onto `RequestContext.accessToken`, ready for
   a future call to the TFLabs Orchestrator Service (not yet made). Rejection returns
-  the same `ErrorResponse` shape used elsewhere in this API (`401 UNAUTHENTICATED` if
-  no session record exists, `503 SESSION_STORE_UNAVAILABLE` if Redis itself is
+  the same `ErrorResponse` shape used elsewhere in this API (`401 SESSION_COOKIE_MISSING`,
+  `TENANT_HEADER_MISSING` or `SESSION_INVALID_OR_EXPIRED` depending on what was wrong, `503 SESSION_STORE_UNAVAILABLE` if Redis itself is
   unreachable).
 
 Only `POST /api/v1/chat/messages` is actually gated — actuator health/readiness,
@@ -267,7 +267,7 @@ curl "http://localhost:8080/back-office-ai/api/v1/debug/session-lookup" -H "Cook
 
 Returns `200` with `{ username, tenantId, accessToken, refreshToken, contextJson,
 fingerprint }` (every field exactly as stored, unvalidated) if a record exists, `401
-UNAUTHENTICATED` if not, `503 SESSION_STORE_UNAVAILABLE` if Redis is unreachable.
+SESSION_INVALID_OR_EXPIRED` if not, `503 SESSION_STORE_UNAVAILABLE` if Redis is unreachable.
 
 ## SSE event contract (FE ↔ BE)
 

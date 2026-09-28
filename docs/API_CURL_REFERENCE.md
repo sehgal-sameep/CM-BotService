@@ -129,7 +129,9 @@ Auth failures come back as plain JSON before any stream starts:
 
 | Response | Meaning |
 |---|---|
-| `401 UNAUTHENTICATED` | No `SESSION` cookie, no `X-Tenant-Id`, or no Redis record for that session + tenant |
+| `401 SESSION_COOKIE_MISSING` | No `SESSION` cookie was sent, or it was blank. Sign in, or check the cookie is forwarded (`credentials: 'include'` for cross-origin calls). |
+| `401 TENANT_HEADER_MISSING` | The `SESSION` cookie arrived but `X-Tenant-Id` was missing or blank. |
+| `401 SESSION_INVALID_OR_EXPIRED` | Both arrived, but no usable Redis record exists for that session + tenant: expired/signed-out session, wrong cookie value, tenant mismatch, or a malformed record. The `REDIS_SESSION_RECORD_*` log line says which. |
 | `503 SESSION_STORE_UNAVAILABLE` | Redis is unreachable. The `REDIS_SESSION_LOOKUP_FAILED` log line has the endpoint and root cause. |
 
 ### 1.3 Mock-mode scenarios (`ml-agent.mode=mock` only)

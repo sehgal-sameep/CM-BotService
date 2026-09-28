@@ -172,7 +172,11 @@ public class SessionAuthenticationWebFilter implements WebFilter {
     response.getHeaders().setContentType(MediaType.APPLICATION_JSON);
     String correlationId = exchange.getAttribute(CorrelationIdFilter.CORRELATION_ID_ATTRIBUTE);
     ErrorResponse body =
-        ErrorResponse.of(reason.errorCode(), rejectionMessage(reason), correlationId);
+        ErrorResponse.of(
+            reason.errorCode(),
+            reason.clientMessage(
+                properties.session().cookieName(), properties.session().tenantHeaderName()),
+            correlationId);
 
     byte[] bytes;
     try {
@@ -183,13 +187,5 @@ public class SessionAuthenticationWebFilter implements WebFilter {
     }
     DataBuffer buffer = response.bufferFactory().wrap(bytes);
     return response.writeWith(Mono.just(buffer));
-  }
-
-  private static String rejectionMessage(AuthRejectionReason reason) {
-    return switch (reason) {
-      case MISSING_SESSION, MISSING_TENANT, SESSION_NOT_FOUND -> "Authentication required.";
-      case SESSION_STORE_UNAVAILABLE ->
-          "Authentication service is temporarily unavailable; please try again shortly.";
-    };
   }
 }

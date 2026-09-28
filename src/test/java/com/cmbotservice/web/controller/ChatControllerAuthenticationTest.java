@@ -48,7 +48,7 @@ class ChatControllerAuthenticationTest {
   }
 
   @Test
-  void missingSessionCookie_returns401Unauthenticated() {
+  void missingSessionCookie_returns401SessionCookieMissing() {
     restTestClient
         .post()
         .uri("/back-office-ai/api/v1/chat/messages")
@@ -61,11 +61,11 @@ class ChatControllerAuthenticationTest {
         .isUnauthorized()
         .expectBody()
         .jsonPath("$.errorCode")
-        .isEqualTo("UNAUTHENTICATED");
+        .isEqualTo("SESSION_COOKIE_MISSING");
   }
 
   @Test
-  void sessionNotFoundInRedis_returns401Unauthenticated() {
+  void sessionNotFoundInRedis_returns401SessionInvalidOrExpired() {
     stubSessionStore.reset(); // no session set
 
     restTestClient
@@ -81,7 +81,7 @@ class ChatControllerAuthenticationTest {
         .isUnauthorized()
         .expectBody()
         .jsonPath("$.errorCode")
-        .isEqualTo("UNAUTHENTICATED");
+        .isEqualTo("SESSION_INVALID_OR_EXPIRED");
   }
 
   @Test
