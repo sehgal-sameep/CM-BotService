@@ -76,7 +76,7 @@ Accept: text/event-stream
 | Field | Required? | Notes |
 |---|---|---|
 | `caseId` | **Yes** | Letters, digits, `_`, `-` only. Max 100 chars. |
-| `history` | No | Omit (or send an empty array) to start a brand-new conversation. Otherwise, resend the full transcript so far — see §7. Each turn is `{ "role": "user"|"assistant", "content": "..." }`; at most 50 turns. |
+| `history` | No | Omit (or send an empty array) to start a brand-new conversation. Otherwise, resend the full transcript so far — see §7. Each turn is `{ "role": "user"|"assistant", "content": "..." }`; at most 50 turns. `content` is optional and may be omitted, `null`, empty, or blank. |
 | `requestId` | No | Your own tracking ID, for your logs only. |
 | `endUserId` | No | Forwarded to the ML Agent as-is; not interpreted by this backend. |
 | `message` | **Yes** | The analyst's question/prompt. Max 4000 characters. |

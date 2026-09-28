@@ -155,6 +155,36 @@ class ChatControllerTest {
   }
 
   @Test
+  void historyTurnWithMissingNullEmptyOrBlankContent_isAccepted() {
+    java.util.Map<String, Object> nullContent = new java.util.HashMap<>();
+    nullContent.put("role", "assistant");
+    nullContent.put("content", null);
+
+    restTestClient
+        .post()
+        .uri("/back-office-ai/api/v1/chat/messages")
+        .header(RequestHeaders.TENANT_ID, "tenant-1")
+        .header(RequestHeaders.ORGANIZATION_ID, "org-1")
+        .contentType(MediaType.APPLICATION_JSON)
+        .accept(MediaType.TEXT_EVENT_STREAM)
+        .body(
+            Map.of(
+                "caseId", "case-1",
+                "history",
+                    java.util.List.of(
+                        Map.of("role", "user"),
+                        nullContent,
+                        Map.of("role", "user", "content", ""),
+                        Map.of("role", "assistant", "content", "   ")),
+                "message", "Which rules were triggered?"))
+        .exchange()
+        .expectStatus()
+        .isOk()
+        .expectBody(String.class)
+        .value(body -> assertThat(body).contains("event:chunk", "event:done"));
+  }
+
+  @Test
   void blankMessage_returns400ValidationError() {
     restTestClient
         .post()

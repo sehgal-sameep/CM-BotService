@@ -21,9 +21,12 @@ public record HistoryTurn(
                 "Who sent this turn — assumed \"user\" or \"assistant\" (unconfirmed, see README.md).",
             example = "user")
         String role,
-    @NotBlank(message = "history[].content must not be blank")
-        @Size(max = 4000, message = "history[].content must be at most 4000 characters")
+    @Size(max = 4000, message = "history[].content must be at most 4000 characters")
         @Schema(
-            description = "That turn's message text, forwarded as-is.",
-            example = "Summarize this case for me")
+            description =
+                "Optional. That turn's message text, forwarded as-is. May be omitted, null, empty,"
+                    + " or blank — a missing value is sent to the ML Agent as an empty string.",
+            example = "Summarize this case for me",
+            requiredMode = Schema.RequiredMode.NOT_REQUIRED,
+            nullable = true)
         String content) {}

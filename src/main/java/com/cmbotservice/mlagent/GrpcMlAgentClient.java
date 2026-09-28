@@ -270,14 +270,16 @@ public class GrpcMlAgentClient implements MlAgentClient {
    * The wire contract's {@code ConversationTurn} is a {@code user}/{@code agent} oneof rather than
    * this backend's own {@code role}/{@code content} shape — {@code role} is assumed "user" vs.
    * anything else meaning the agent's own prior turn, matching {@code MlAgentRequest.HistoryTurn}'s
-   * existing assumption.
+   * existing assumption. {@code content} is optional; a {@code null} one is sent as {@code ""}
+   * (proto3 strings have no null, and the setters reject it).
    */
   private static ConversationTurn toConversationTurn(MlAgentRequest.HistoryTurn turn) {
     ConversationTurn.Builder builder = ConversationTurn.newBuilder();
+    String content = turn.content() == null ? "" : turn.content();
     if ("user".equalsIgnoreCase(turn.role())) {
-      builder.setUser(ConversationTurn.UserTurn.newBuilder().setPrompt(turn.content()));
+      builder.setUser(ConversationTurn.UserTurn.newBuilder().setPrompt(content));
     } else {
-      builder.setAgent(ConversationTurn.AgentTurn.newBuilder().setText(turn.content()));
+      builder.setAgent(ConversationTurn.AgentTurn.newBuilder().setText(content));
     }
     return builder.build();
   }

@@ -561,4 +561,34 @@ class GrpcMlAgentClientTest {
     assertThatThrownBy(() -> new BearerTokenCallCredentials(accessToken))
         .isInstanceOf(IllegalArgumentException.class);
   }
+
+  @Test
+  void historyTurnWithNullOrBlankContent_isSentAsIs_withNullMappedToEmpty() throws IOException {
+    MlAgentRequest requestWithEmptyContent =
+        new MlAgentRequest(
+            "tenant-1",
+            "org-1",
+            "case-1",
+            List.of(
+                new MlAgentRequest.HistoryTurn("user", null),
+                new MlAgentRequest.HistoryTurn("assistant", null),
+                new MlAgentRequest.HistoryTurn("user", "  ")),
+            "msg-1",
+            "analyst-1",
+            null,
+            "corr-1",
+            "req-1",
+            "hi",
+            null);
+    GrpcMlAgentClient client = startStreamingClient();
+
+    StepVerifier.create(client.streamResponse(requestWithEmptyContent))
+        .expectNext(CHUNK, DONE)
+        .verifyComplete();
+
+    AskCaseManagerRequest sent = capturedRequest.get();
+    assertThat(sent.getHistory(0).getUser().getPrompt()).isEmpty();
+    assertThat(sent.getHistory(1).getAgent().getText()).isEmpty();
+    assertThat(sent.getHistory(2).getUser().getPrompt()).isEqualTo("  ");
+  }
 }
