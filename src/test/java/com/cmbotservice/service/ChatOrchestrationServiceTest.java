@@ -544,6 +544,32 @@ class ChatOrchestrationServiceTest {
   }
 
   @Test
+  void accessToken_isPassedFromRequestContextToTheMlAgentRequest() {
+    AtomicReference<MlAgentRequest> captured = new AtomicReference<>();
+    MlAgentClient capturing =
+        request -> {
+          captured.set(request);
+          return Flux.just(DONE);
+        };
+    ChatOrchestrationService service =
+        newService(
+            CircuitBreaker.ofDefaults("t-token"),
+            Bulkhead.ofDefaults("t-token"),
+            5,
+            defaultChatProperties(),
+            capturing);
+    RequestContext authenticated =
+        new RequestContext("tenant-1", "case-1", "org-1", "analyst-1", "corr-1", "token-1");
+
+    service
+        .streamMessage(authenticated, chatRequest("hello"))
+        .collectList()
+        .block(Duration.ofSeconds(5));
+
+    assertThat(captured.get().accessToken()).isEqualTo("token-1");
+  }
+
+  @Test
   void missingHistory_isMappedToAnEmptyList_neverNull() {
     AtomicReference<MlAgentRequest> captured = new AtomicReference<>();
     MlAgentClient capturing =

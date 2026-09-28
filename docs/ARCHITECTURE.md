@@ -868,8 +868,11 @@ unauthenticated, since a k8s prober has no session cookie):
    (the `BFF_SESSION` `RequestContextResolver` implementation) reads it back out to
    populate `RequestContext.userId`/`RequestContext.accessToken` — `ChatController`
    needed zero changes, exactly as `RequestContextResolver`'s own Javadoc anticipated
-   (§17). `accessToken` is not yet forwarded anywhere — a future task wires it into the
-   call to the TFLabs Orchestrator Service.
+   (§17). `GrpcMlAgentClient` forwards a non-blank `accessToken` to the
+   orchestrator as `authorization: Bearer <token>` gRPC call metadata (per-call
+   `BearerTokenCallCredentials`; the protobuf request is unchanged). No token means no
+   `authorization` header. The token is never logged: every carrier's `toString()`
+   redacts it, and logs only show `accessTokenPresent=true|false`.
 4. CORS (`config/CorsConfig`, a standard Spring `CorsWebFilter`) applies in **every**
    security mode and, by explicit request, **allows any origin** by default, with
    credentials. Browsers reject `Access-Control-Allow-Origin: *` alongside cookies, so

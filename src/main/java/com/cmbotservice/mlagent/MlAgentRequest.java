@@ -22,6 +22,11 @@ import java.util.List;
  * <p>{@code endUserId} is an optional hint whose exact semantics (the analyst vs. the case's
  * customer) aren't yet pinned down upstream — forwarded as-is, never interpreted here. {@code
  * operatorId} identifies the analyst making the request.
+ *
+ * <p>{@code accessToken} is the caller's BFF-issued token ({@code null} when the request isn't
+ * authenticated). It is never part of the protobuf request — {@code GrpcMlAgentClient} sends it
+ * only as {@code authorization} call metadata — and {@link #toString()} redacts it so it can't
+ * reach a log line by accident.
  */
 public record MlAgentRequest(
     String tenantId,
@@ -33,7 +38,22 @@ public record MlAgentRequest(
     String endUserId,
     String correlationId,
     String requestId,
-    String message) {
+    String message,
+    String accessToken) {
+
+  @Override
+  public String toString() {
+    return "MlAgentRequest[tenantId=%s, organization=%s, caseId=%s, historyTurns=%d, messageId=%s,"
+            .formatted(
+                tenantId, organization, caseId, history == null ? 0 : history.size(), messageId)
+        + " operatorId=%s, endUserId=%s, correlationId=%s, requestId=%s, accessTokenPresent=%s]"
+            .formatted(
+                operatorId,
+                endUserId,
+                correlationId,
+                requestId,
+                accessToken != null && !accessToken.isBlank());
+  }
 
   /**
    * One turn of an explicit conversation transcript, forwarded to the ML Agent untouched. The real

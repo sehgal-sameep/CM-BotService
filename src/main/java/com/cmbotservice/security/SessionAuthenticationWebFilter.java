@@ -34,10 +34,10 @@ import reactor.core.publisher.Mono;
  * JsonBlobSessionStore} for the (larger, diagrammed) validation flow this replaces; reintroduce
  * that logic here if/when that scope comes back rather than guessing at it piecemeal.
  *
- * <p>On success, the resolved {@link SessionContext} (carrying {@code accessToken}, for a future
- * call to the TFLabs Orchestrator Service) is stored as an exchange attribute for {@link
- * SessionRequestContextResolver} to consume; on rejection, writes this service's own {@link
- * ErrorResponse} JSON shape directly.
+ * <p>On success, the resolved {@link SessionContext} (carrying {@code accessToken}, which {@code
+ * GrpcMlAgentClient} forwards as {@code authorization: Bearer} call metadata) is stored as an
+ * exchange attribute for {@link SessionRequestContextResolver} to consume; on rejection, writes
+ * this service's own {@link ErrorResponse} JSON shape directly.
  *
  * <p>Runs only when {@code chatbot.security.mode: BFF_SESSION} — see {@link ChatbotSecurityMode}
  * for the master toggle. Ordered right after {@code CorrelationIdFilter} so a correlation ID is

@@ -28,7 +28,8 @@ class MockMlAgentClientTest {
         null,
         "corr-1",
         "req-1",
-        message);
+        message,
+        null);
   }
 
   @Test

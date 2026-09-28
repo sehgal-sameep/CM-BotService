@@ -47,6 +47,13 @@ import reactor.core.publisher.FluxSink;
  * first-response/idle {@code .timeout()} operator is the one timeout authority, client-agnostic — a
  * second, competing deadline at this layer would just be a redundant knob.
  *
+ * <p><b>Authentication:</b> when the request carries a non-blank {@code accessToken}, it is sent as
+ * {@code authorization: Bearer <token>} call metadata via per-call {@link
+ * BearerTokenCallCredentials} — never in the protobuf request. Otherwise, e.g. in {@code
+ * chatbot.security.mode: NONE}, no {@code authorization} header is sent at all, exactly as before.
+ * The shared {@link #chatAgentStub} is never modified: {@code withCallCredentials} returns a new
+ * stub for that one call, so tokens can't cross between concurrent requests.
+ *
  * <p>Selected via {@code ml-agent.mode: grpc}; {@link MockMlAgentClient} steps aside automatically
  * ({@code @ConditionalOnProperty} on both, never a runtime check here).
  */
@@ -66,14 +73,21 @@ public class GrpcMlAgentClient implements MlAgentClient {
     AskCaseManagerRequest protoRequest = toProtoRequest(request);
     return Flux.defer(
             () -> {
+              boolean accessTokenPresent = hasText(request.accessToken());
               log.info(
                   "GRPC_CALL_STARTED messageId={} rpc=ChatAgent/AskCaseManager target={}"
-                      + " historyTurns={} promptLength={}",
+                      + " historyTurns={} promptLength={} accessTokenPresent={}",
                   request.messageId(),
                   chatAgentStub.getChannel().authority(),
                   protoRequest.getHistoryCount(),
-                  protoRequest.getPrompt().length());
-              return grpcEventFlux(protoRequest);
+                  protoRequest.getPrompt().length(),
+                  accessTokenPresent);
+              ChatAgentGrpc.ChatAgentStub stub =
+                  accessTokenPresent
+                      ? chatAgentStub.withCallCredentials(
+                          new BearerTokenCallCredentials(request.accessToken()))
+                      : chatAgentStub;
+              return grpcEventFlux(stub, protoRequest);
             })
         .filter(GrpcMlAgentClient::isForwardable)
         .doOnComplete(
@@ -93,7 +107,8 @@ public class GrpcMlAgentClient implements MlAgentClient {
    * down from {@code ChatOrchestrationService}) calls {@code ClientCallStreamObserver#cancel(...)}
    * to actually stop the server-side call.
    */
-  private Flux<AnswerEvent> grpcEventFlux(AskCaseManagerRequest protoRequest) {
+  private static Flux<AnswerEvent> grpcEventFlux(
+      ChatAgentGrpc.ChatAgentStub stub, AskCaseManagerRequest protoRequest) {
     return Flux.create(
         sink -> {
           AtomicReference<ClientCallStreamObserver<AskCaseManagerRequest>> callStreamRef =
@@ -136,8 +151,8 @@ public class GrpcMlAgentClient implements MlAgentClient {
                   sink.complete();
                 }
               };
-          chatAgentStub.askCaseManager(protoRequest, observer);
-          // chatAgentStub.askCaseManager(...) has now returned, meaning start() has already run
+          stub.askCaseManager(protoRequest, observer);
+          // stub.askCaseManager(...) has now returned, meaning start() has already run
           // (grpc-java calls it synchronously as part of this method) — request()/cancel() are
           // safe from here on.
           ClientCallStreamObserver<AskCaseManagerRequest> callStream = callStreamRef.get();
@@ -216,6 +231,10 @@ public class GrpcMlAgentClient implements MlAgentClient {
       default ->
           new MlAgentCommunicationException("ML Agent returned an unexpected status " + code, ex);
     };
+  }
+
+  private static boolean hasText(String value) {
+    return value != null && !value.isBlank();
   }
 
   private static AskCaseManagerRequest toProtoRequest(MlAgentRequest request) {

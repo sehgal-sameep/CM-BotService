@@ -205,8 +205,9 @@ curl -s http://localhost:8080/actuator/health/readiness  # -> still UP
   full stop. There is currently **no** fingerprint, CSRF, permission, or token-expiry
   check, even though the source design diagram (`docs/chatbot_auth_redis_lookup.png`)
   calls for all four — see `docs/ARCHITECTURE.md` §20 if that scope needs to come back.
-  The session's `access_token` is carried onto `RequestContext.accessToken`, ready for
-  a future call to the TFLabs Orchestrator Service (not yet made). Rejection returns
+  The session's `access_token` is carried onto `RequestContext.accessToken` and sent
+  to the orchestrator as `authorization: Bearer <token>` gRPC metadata (never in the
+  protobuf request; omitted entirely when there is no token). Rejection returns
   the same `ErrorResponse` shape used elsewhere in this API (`401 SESSION_COOKIE_MISSING`,
   `TENANT_HEADER_MISSING` or `SESSION_INVALID_OR_EXPIRED` depending on what was wrong, `503 SESSION_STORE_UNAVAILABLE` if Redis itself is
   unreachable).

@@ -197,7 +197,8 @@ public class ChatOrchestrationServiceImpl implements ChatOrchestrationService {
             request.endUserId(),
             context.correlationId(),
             request.requestId(),
-            request.message());
+            request.message(),
+            context.accessToken());
 
     AtomicBoolean firstEventSeen = new AtomicBoolean(false);
     AtomicBoolean agentErrorEventSeen = new AtomicBoolean(false);

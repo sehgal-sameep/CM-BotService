@@ -1,10 +1,15 @@
 package com.cmbotservice.mlagent;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.cmbotservice.common.ErrorCode;
 import com.cmbotservice.common.MlAgentRejectedException;
 import com.cmbotservice.common.MlAgentUnavailableException;
+import com.cmbotservice.context.RequestContext;
 import com.cmbotservice.mlagent.grpc.v1.AnswerEvent;
 import com.cmbotservice.mlagent.grpc.v1.AnswerPayload;
 import com.cmbotservice.mlagent.grpc.v1.AskCaseManagerRequest;
@@ -17,8 +22,14 @@ import com.cmbotservice.mlagent.grpc.v1.Error;
 import com.cmbotservice.mlagent.grpc.v1.Ping;
 import com.cmbotservice.mlagent.grpc.v1.ToolCall;
 import com.cmbotservice.mlagent.grpc.v1.ToolResult;
+import com.cmbotservice.security.SessionContext;
 import io.grpc.ManagedChannel;
+import io.grpc.Metadata;
 import io.grpc.Server;
+import io.grpc.ServerCall;
+import io.grpc.ServerCallHandler;
+import io.grpc.ServerInterceptor;
+import io.grpc.ServerInterceptors;
 import io.grpc.Status;
 import io.grpc.inprocess.InProcessChannelBuilder;
 import io.grpc.inprocess.InProcessServerBuilder;
@@ -32,6 +43,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.NullSource;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.slf4j.LoggerFactory;
 import reactor.test.StepVerifier;
 
 /**
@@ -46,6 +60,18 @@ class GrpcMlAgentClientTest {
   private Server server;
   private ManagedChannel channel;
   private final AtomicReference<AskCaseManagerRequest> capturedRequest = new AtomicReference<>();
+  private final AtomicReference<Metadata> capturedHeaders = new AtomicReference<>();
+
+  /** Records the metadata of every incoming call, the way a real auth interceptor would see it. */
+  private final ServerInterceptor headerCapture =
+      new ServerInterceptor() {
+        @Override
+        public <ReqT, RespT> ServerCall.Listener<ReqT> interceptCall(
+            ServerCall<ReqT, RespT> call, Metadata headers, ServerCallHandler<ReqT, RespT> next) {
+          capturedHeaders.set(headers);
+          return next.startCall(call, headers);
+        }
+      };
 
   private GrpcMlAgentClient startClientWith(Consumer<StreamObserver<AnswerEvent>> script)
       throws IOException {
@@ -62,7 +88,7 @@ class GrpcMlAgentClientTest {
     server =
         InProcessServerBuilder.forName(serverName)
             .directExecutor()
-            .addService(service)
+            .addService(ServerInterceptors.intercept(service, headerCapture))
             .build()
             .start();
     channel = InProcessChannelBuilder.forName(serverName).directExecutor().build();
@@ -80,6 +106,10 @@ class GrpcMlAgentClientTest {
   }
 
   private static MlAgentRequest request() {
+    return request(null);
+  }
+
+  private static MlAgentRequest request(String accessToken) {
     return new MlAgentRequest(
         "tenant-1",
         "org-1",
@@ -92,7 +122,8 @@ class GrpcMlAgentClientTest {
         "gadi5",
         "corr-1",
         "req-1",
-        "hello");
+        "hello",
+        accessToken);
   }
 
   private static final CaseManagerAnswerPayload VALID_PAYLOAD =
@@ -390,7 +421,8 @@ class GrpcMlAgentClientTest {
             null,
             "corr-1",
             "req-1",
-            "hi");
+            "hi",
+            null);
     GrpcMlAgentClient client =
         startClientWith(
             observer -> {
@@ -403,5 +435,130 @@ class GrpcMlAgentClientTest {
     ConversationTurn turn = capturedRequest.get().getHistory(0);
     assertThat(turn.getTurnCase()).isEqualTo(ConversationTurn.TurnCase.AGENT);
     assertThat(turn.getAgent().getText()).isEqualTo("hello there");
+  }
+
+  // --- authorization metadata ---
+
+  private static final String TOKEN = "eyJhbGciOiJSUzI1NiJ9.test-payload.test-signature";
+  private static final Metadata.Key<String> AUTHORIZATION =
+      Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
+
+  private static final AnswerEvent CHUNK =
+      AnswerEvent.newBuilder().setChunk(Chunk.newBuilder().setDelta("Hello")).build();
+  private static final AnswerEvent DONE =
+      AnswerEvent.newBuilder().setDone(Done.newBuilder()).build();
+
+  private GrpcMlAgentClient startStreamingClient() throws IOException {
+    return startClientWith(
+        observer -> {
+          observer.onNext(CHUNK);
+          observer.onNext(DONE);
+          observer.onCompleted();
+        });
+  }
+
+  @Test
+  void accessToken_isSentAsBearerAuthorizationMetadata_andStreamIsUnchanged() throws IOException {
+    GrpcMlAgentClient client = startStreamingClient();
+
+    StepVerifier.create(client.streamResponse(request(TOKEN)))
+        .expectNext(CHUNK, DONE)
+        .verifyComplete();
+
+    assertThat(capturedHeaders.get().getAll(AUTHORIZATION)).containsExactly("Bearer " + TOKEN);
+  }
+
+  @ParameterizedTest
+  @NullSource
+  @ValueSource(strings = {"", "   "})
+  void missingOrBlankAccessToken_sendsNoAuthorizationMetadata(String accessToken)
+      throws IOException {
+    GrpcMlAgentClient client = startStreamingClient();
+
+    StepVerifier.create(client.streamResponse(request(accessToken)))
+        .expectNext(CHUNK, DONE)
+        .verifyComplete();
+
+    assertThat(capturedHeaders.get().containsKey(AUTHORIZATION)).isFalse();
+  }
+
+  @Test
+  void protoRequest_isIdenticalWithAndWithoutAccessToken() throws IOException {
+    GrpcMlAgentClient client = startStreamingClient();
+
+    client.streamResponse(request(null)).blockLast(Duration.ofSeconds(5));
+    AskCaseManagerRequest withoutToken = capturedRequest.get();
+    client.streamResponse(request(TOKEN)).blockLast(Duration.ofSeconds(5));
+    AskCaseManagerRequest withToken = capturedRequest.get();
+
+    assertThat(withToken).isEqualTo(withoutToken);
+    assertThat(withToken.toString()).doesNotContain(TOKEN);
+  }
+
+  @Test
+  void accessToken_isScopedToItsOwnCall_neverReusedByTheSharedStub() throws IOException {
+    GrpcMlAgentClient client = startStreamingClient();
+
+    client.streamResponse(request("token-user-a")).blockLast(Duration.ofSeconds(5));
+    assertThat(capturedHeaders.get().getAll(AUTHORIZATION)).containsExactly("Bearer token-user-a");
+
+    client.streamResponse(request(null)).blockLast(Duration.ofSeconds(5));
+    assertThat(capturedHeaders.get().containsKey(AUTHORIZATION)).isFalse();
+
+    client.streamResponse(request("token-user-b")).blockLast(Duration.ofSeconds(5));
+    assertThat(capturedHeaders.get().getAll(AUTHORIZATION)).containsExactly("Bearer token-user-b");
+  }
+
+  @Test
+  void accessToken_neverAppearsInLogs_evenWhenTheCallFails() throws IOException {
+    Logger root = (Logger) LoggerFactory.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME);
+    ListAppender<ILoggingEvent> appender = new ListAppender<>();
+    appender.start();
+    root.addAppender(appender);
+    try {
+      GrpcMlAgentClient ok = startStreamingClient();
+      ok.streamResponse(request(TOKEN)).blockLast(Duration.ofSeconds(5));
+      tearDown();
+
+      GrpcMlAgentClient failing =
+          startClientWith(
+              observer -> observer.onError(Status.UNAUTHENTICATED.asRuntimeException()));
+      StepVerifier.create(failing.streamResponse(request(TOKEN)))
+          .expectError(MlAgentRejectedException.class)
+          .verify(Duration.ofSeconds(5));
+    } finally {
+      root.detachAppender(appender);
+    }
+
+    assertThat(appender.list)
+        .extracting(ILoggingEvent::getFormattedMessage)
+        .anyMatch(m -> m.contains("accessTokenPresent=true"))
+        .noneMatch(m -> m.contains(TOKEN));
+    assertThat(appender.list)
+        .filteredOn(e -> e.getThrowableProxy() != null)
+        .extracting(e -> String.valueOf(e.getThrowableProxy().getMessage()))
+        .noneMatch(m -> m.contains(TOKEN));
+  }
+
+  @Test
+  void toString_ofEveryTokenCarrier_redactsTheToken() {
+    assertThat(request(TOKEN).toString()).doesNotContain(TOKEN).contains("accessTokenPresent=true");
+    assertThat(new BearerTokenCallCredentials(TOKEN).toString()).doesNotContain(TOKEN);
+    assertThat(
+            new RequestContext("tenant-1", "case-1", "org-1", "alice", "corr-1", TOKEN).toString())
+        .doesNotContain(TOKEN)
+        .contains("accessTokenPresent=true");
+    assertThat(
+            new SessionContext("alice", "tenant-1", TOKEN, "refresh-secret", "{}", "fp").toString())
+        .doesNotContain(TOKEN)
+        .doesNotContain("refresh-secret");
+  }
+
+  @ParameterizedTest
+  @NullSource
+  @ValueSource(strings = {"", "  "})
+  void bearerCredentials_refuseToBuildAnEmptyBearerHeader(String accessToken) {
+    assertThatThrownBy(() -> new BearerTokenCallCredentials(accessToken))
+        .isInstanceOf(IllegalArgumentException.class);
   }
 }

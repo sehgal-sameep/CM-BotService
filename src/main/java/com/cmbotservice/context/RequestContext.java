@@ -12,9 +12,9 @@ package com.cmbotservice.context;
  * request.
  *
  * <p>{@code accessToken} is {@code null} in {@code chatbot.security.mode: NONE} (no BFF session to
- * source it from) and the BFF-issued {@code access_token} in {@code mode: BFF_SESSION} — carried
- * through here, not yet forwarded anywhere, so a future call to the TFLabs Orchestrator Service has
- * it available without another Redis round-trip.
+ * source it from) and the BFF-issued {@code access_token} in {@code mode: BFF_SESSION}. It is
+ * forwarded to the ML Agent only as {@code authorization: Bearer} gRPC call metadata (see {@code
+ * GrpcMlAgentClient}); {@link #toString()} redacts it so it can't reach a log line by accident.
  */
 public record RequestContext(
     String tenantId,
@@ -22,4 +22,12 @@ public record RequestContext(
     String organization,
     String userId,
     String correlationId,
-    String accessToken) {}
+    String accessToken) {
+
+  @Override
+  public String toString() {
+    return "RequestContext[tenantId=%s, caseId=%s, organization=%s, userId=%s, correlationId=%s,"
+            .formatted(tenantId, caseId, organization, userId, correlationId)
+        + " accessTokenPresent=%s]".formatted(accessToken != null && !accessToken.isBlank());
+  }
+}

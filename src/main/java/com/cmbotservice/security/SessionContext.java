@@ -10,8 +10,8 @@ package com.cmbotservice.security;
  * <p><b>Current scope</b>: finding a record at all is treated as "authenticated" — {@code
  * fingerprint} is carried through only for {@link
  * com.cmbotservice.web.controller.SessionDebugController} to expose (no comparison is performed
- * against it), and {@code accessToken} is what downstream code (a future call to the TFLabs
- * Orchestrator Service) will forward.
+ * against it), and {@code accessToken} is forwarded to the ML Agent as {@code authorization:
+ * Bearer} gRPC call metadata.
  */
 public record SessionContext(
     String username,
@@ -20,6 +20,17 @@ public record SessionContext(
     String refreshToken,
     String contextJson,
     String fingerprint) {
+
+  /** Redacts every credential field so a session can't leak tokens through a log line. */
+  @Override
+  public String toString() {
+    return "SessionContext[username=%s, tenantId=%s, accessTokenPresent=%s, refreshTokenPresent=%s]"
+        .formatted(
+            username,
+            tenantId,
+            accessToken != null && !accessToken.isBlank(),
+            refreshToken != null && !refreshToken.isBlank());
+  }
 
   /**
    * The exchange attribute key {@link SessionAuthenticationWebFilter} stores this under, and {@link
