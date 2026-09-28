@@ -7,7 +7,10 @@ import io.swagger.v3.oas.models.Operation;
 import io.swagger.v3.oas.models.info.Contact;
 import io.swagger.v3.oas.models.info.Info;
 import io.swagger.v3.oas.models.parameters.Parameter;
+import io.swagger.v3.oas.models.servers.Server;
+import java.util.List;
 import org.springdoc.core.customizers.OperationCustomizer;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.method.HandlerMethod;
@@ -19,13 +22,23 @@ import org.springframework.web.method.HandlerMethod;
  * controller method. Skipped for {@link SessionDebugController} — that temporary endpoint takes
  * none of these (only a session cookie + tenant header), and marking {@code X-Tenant-Id}/{@code
  * X-Org-Id} as required there would be actively misleading since it never reads them.
+ *
+ * <p>Servers are listed explicitly: the shared dev environment first (Swagger UI's default
+ * selection), then this local instance. Server URLs carry no path — every operation path already
+ * includes the {@code /back-office-ai} base path.
  */
 @Configuration
 public class OpenApiConfig {
 
+  private static final String DEV_SERVER_URL = "https://nsitg.bo-dev.fm.outseer.com";
+
   @Bean
-  public OpenAPI cmBotServiceOpenApi() {
+  public OpenAPI cmBotServiceOpenApi(@Value("${server.port:8080}") int serverPort) {
     return new OpenAPI()
+        .servers(
+            List.of(
+                new Server().url(DEV_SERVER_URL).description("Dev"),
+                new Server().url("http://localhost:" + serverPort).description("Local")))
         .info(
             new Info()
                 .title("Case Manager Chatbot Backend")
