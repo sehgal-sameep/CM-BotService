@@ -12,6 +12,8 @@ import com.cmbotservice.mlagent.grpc.v1.AskCaseManagerRequest;
 import com.cmbotservice.mlagent.grpc.v1.CaseManagerAnswerPayload;
 import com.cmbotservice.mlagent.grpc.v1.ChatAgentGrpc;
 import com.cmbotservice.mlagent.grpc.v1.ConversationTurn;
+import com.google.protobuf.InvalidProtocolBufferException;
+import com.google.protobuf.util.JsonFormat;
 import io.grpc.Status;
 import io.grpc.stub.ClientCallStreamObserver;
 import io.grpc.stub.ClientResponseObserver;
@@ -62,6 +64,12 @@ import reactor.core.publisher.FluxSink;
 @Slf4j
 public class GrpcMlAgentClient implements MlAgentClient {
 
+  private static final JsonFormat.Printer REQUEST_PRINTER =
+      JsonFormat.printer()
+          .preservingProtoFieldNames()
+          .alwaysPrintFieldsWithNoPresence()
+          .omittingInsignificantWhitespace();
+
   private final ChatAgentGrpc.ChatAgentStub chatAgentStub;
 
   public GrpcMlAgentClient(ChatAgentGrpc.ChatAgentStub chatAgentStub) {
@@ -82,6 +90,13 @@ public class GrpcMlAgentClient implements MlAgentClient {
                   protoRequest.getHistoryCount(),
                   protoRequest.getPrompt().length(),
                   accessTokenPresent);
+              log.info(
+                  "GRPC_CALL_REQUEST messageId={} authorization={} request={}",
+                  request.messageId(),
+                  accessTokenPresent
+                      ? "Bearer " + LogSanitizer.maskSecret(request.accessToken())
+                      : "<none>",
+                  toJson(protoRequest));
               ChatAgentGrpc.ChatAgentStub stub =
                   accessTokenPresent
                       ? chatAgentStub.withCallCredentials(
@@ -231,6 +246,19 @@ public class GrpcMlAgentClient implements MlAgentClient {
       default ->
           new MlAgentCommunicationException("ML Agent returned an unexpected status " + code, ex);
     };
+  }
+
+  /**
+   * The exact {@code AskCaseManagerRequest} put on the wire, as proto3 JSON with the original
+   * {@code .proto} field names and default-valued fields included, so the log shows every key sent.
+   * The access token is never part of this message (it travels as call metadata).
+   */
+  private static String toJson(AskCaseManagerRequest protoRequest) {
+    try {
+      return REQUEST_PRINTER.print(protoRequest);
+    } catch (InvalidProtocolBufferException ex) {
+      return "<unprintable: " + ex.getMessage() + ">";
+    }
   }
 
   private static boolean hasText(String value) {
