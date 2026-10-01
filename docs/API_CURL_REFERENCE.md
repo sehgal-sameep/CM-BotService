@@ -60,7 +60,7 @@ continuation, single-quoted JSON). On Windows:
 Streams the ML Agent's answer back as SSE, forwarded unchanged from the TF Labs
 orchestrator. The event format is in [`CHAT_API_GUIDE.md`](CHAT_API_GUIDE.md) §6.
 
-**Required headers:** `X-Tenant-Id`, `X-Org-Id`, `Content-Type: application/json`.
+**Required headers:** `X-Tenant-Id`, `Content-Type: application/json`. (`X-Org-Id` is optional.)
 **Required body fields:** `message`. (`caseId` is optional.)
 
 ### 1.1 Security mode `NONE` (local development)

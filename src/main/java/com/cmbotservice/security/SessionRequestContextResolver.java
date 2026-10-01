@@ -39,7 +39,7 @@ public class SessionRequestContextResolver implements RequestContextResolver {
     String accessToken = session != null ? session.accessToken() : null;
     String tenantId = RequestContextResolver.requireHeader(exchange, RequestHeaders.TENANT_ID);
     String organization =
-        RequestContextResolver.requireHeader(exchange, RequestHeaders.ORGANIZATION_ID);
+        RequestContextResolver.optionalHeader(exchange, RequestHeaders.ORGANIZATION_ID);
     if (session == null) {
       log.warn(
           "REQUEST_CONTEXT_WITHOUT_SESSION — no authenticated session on this request (only"

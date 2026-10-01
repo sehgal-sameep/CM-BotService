@@ -8,9 +8,10 @@ import org.springframework.web.server.ServerWebExchange;
 /**
  * Resolves "who is calling, for which tenant/organization/case" into a {@link RequestContext}.
  * {@code tenantId}/{@code organization} are read from the {@code X-Tenant-Id}/{@code X-Org-Id}
- * request headers (see {@link RequestHeaders}) by every implementation — both are required, and an
- * implementation rejects the request (400, {@code ErrorCode.VALIDATION_ERROR}) if either is missing
- * or blank.
+ * request headers (see {@link RequestHeaders}) by every implementation. {@code X-Tenant-Id} is
+ * required — an implementation rejects the request (400, {@code ErrorCode.VALIDATION_ERROR}) if it
+ * is missing or blank. {@code X-Org-Id} is optional — missing or blank resolves to a {@code null}
+ * organization, which is then not forwarded to the ML Agent.
  *
  * <p>This was the single seam real authentication plugged in at: {@link
  * HeaderBasedRequestContextResolver} (active in {@code chatbot.security.mode: NONE}, trusting an
@@ -35,5 +36,14 @@ public interface RequestContextResolver {
           HttpStatus.BAD_REQUEST, headerName + " header must not be blank");
     }
     return value;
+  }
+
+  /**
+   * Shared by every implementation for an optional header: its value, or {@code null} if it is
+   * missing or blank — never a default, so an absent header is never forwarded as something else.
+   */
+  static String optionalHeader(ServerWebExchange exchange, String headerName) {
+    String value = exchange.getRequest().getHeaders().getFirst(headerName);
+    return StringUtils.hasText(value) ? value : null;
   }
 }

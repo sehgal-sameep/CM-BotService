@@ -263,7 +263,7 @@ class ChatControllerTest {
   }
 
   @Test
-  void missingOrganizationIdHeader_returns400ValidationError() {
+  void missingOrganizationIdHeader_isAccepted() {
     restTestClient
         .post()
         .uri("/back-office-ai/api/v1/chat/messages")
@@ -272,10 +272,7 @@ class ChatControllerTest {
         .body(Map.of("caseId", "case-1", "message", "hello"))
         .exchange()
         .expectStatus()
-        .isBadRequest()
-        .expectBody()
-        .jsonPath("$.errorCode")
-        .isEqualTo("VALIDATION_ERROR");
+        .isOk();
   }
 
   @Test

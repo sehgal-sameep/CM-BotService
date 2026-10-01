@@ -30,7 +30,7 @@ public class HeaderBasedRequestContextResolver implements RequestContextResolver
   public RequestContext resolve(ServerWebExchange exchange, String caseId) {
     String tenantId = RequestContextResolver.requireHeader(exchange, RequestHeaders.TENANT_ID);
     String organization =
-        RequestContextResolver.requireHeader(exchange, RequestHeaders.ORGANIZATION_ID);
+        RequestContextResolver.optionalHeader(exchange, RequestHeaders.ORGANIZATION_ID);
     String userId = exchange.getRequest().getHeaders().getFirst(RequestHeaders.USER_ID);
     String correlationId = exchange.getAttribute(CorrelationIdFilter.CORRELATION_ID_ATTRIBUTE);
     if (!StringUtils.hasText(userId)) {

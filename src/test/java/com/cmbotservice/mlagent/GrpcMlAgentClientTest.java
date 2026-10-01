@@ -409,11 +409,11 @@ class GrpcMlAgentClientTest {
   }
 
   @Test
-  void absentOperatorIdAndEndUserId_areNotSetOnTheProtoRequest() throws IOException {
+  void absentOrganizationOperatorIdAndEndUserId_areNotSetOnTheProtoRequest() throws IOException {
     MlAgentRequest withoutIds =
         new MlAgentRequest(
             "tenant-1",
-            "org-1",
+            null,
             "case-1",
             List.of(),
             "msg-1",
@@ -433,6 +433,7 @@ class GrpcMlAgentClientTest {
     client.streamResponse(withoutIds).blockLast(Duration.ofSeconds(5));
 
     AskCaseManagerRequest sent = capturedRequest.get();
+    assertThat(sent.getRequestContext().getOrganization()).isEmpty();
     assertThat(sent.getOperatorId()).isEmpty();
     assertThat(sent.getCaseContext().getEndUserId()).isEmpty();
   }

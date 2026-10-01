@@ -99,11 +99,11 @@ public class OpenApiConfig {
         new Parameter()
             .in("header")
             .name(RequestHeaders.ORGANIZATION_ID)
-            .required(true)
+            .required(false)
             .description(
-                "Organization identifier, forwarded to the ML Agent's request "
-                    + "context. Required on every request — a blank or missing value is "
-                    + "rejected with a 400 validation error.")
+                "Optional organization identifier, forwarded to the ML Agent's request "
+                    + "context only when sent. A blank value is treated the same as a missing "
+                    + "one — nothing is forwarded.")
             .example("org-123"));
     return operation;
   }

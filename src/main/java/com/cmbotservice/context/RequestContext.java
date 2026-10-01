@@ -8,8 +8,9 @@ package com.cmbotservice.context;
  * dropped or leaked across an executor hop.
  *
  * <p>{@code tenantId}/{@code organization} come from the {@code X-Tenant-Id}/ {@code X-Org-Id}
- * request headers (see {@link RequestHeaders}), not the request body — both are required on every
- * request.
+ * request headers (see {@link RequestHeaders}), not the request body. {@code X-Tenant-Id} is
+ * required on every request; {@code X-Org-Id} is optional, and {@code organization} is {@code null}
+ * when it is missing or blank.
  *
  * <p>{@code accessToken} is {@code null} in {@code chatbot.security.mode: NONE} (no BFF session to
  * source it from) and the BFF-issued {@code access_token} in {@code mode: BFF_SESSION}. It is

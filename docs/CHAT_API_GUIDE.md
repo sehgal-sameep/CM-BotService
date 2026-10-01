@@ -29,7 +29,7 @@ It's a pass-through proxy, not a translator, a database, or a session manager. E
 | Term | What it means |
 |---|---|
 | `tenantId` | Which customer this request belongs to. Sent as the `X-Tenant-Id` request header, not a body field. |
-| `organization` | Which organization within that tenant this request belongs to. Sent as the `X-Org-Id` request header. |
+| `organization` | Which organization within that tenant this request belongs to. Sent as the optional `X-Org-Id` request header. |
 | `caseId` | Which fraud case the analyst is chatting about. |
 | `history` | The full conversation transcript so far, oldest turn first. This is the **only** way to continue a conversation — the ML Agent's contract has no session/continuation token at all. Resend the growing transcript on every follow-up message. |
 | `messageId` | A unique ID this backend generates per message, for tracing in logs. Not something the frontend sends; only appears in a `service_error` event (§6). |
@@ -52,12 +52,12 @@ Accept: text/event-stream
 | Header | Purpose |
 |---|---|
 | `X-Tenant-Id` | Which customer this request belongs to. Missing or blank → `400 VALIDATION_ERROR`, request never reaches the ML Agent. |
-| `X-Org-Id` | Which organization within that tenant. Missing or blank → `400 VALIDATION_ERROR`, same as above. |
 
 **Optional headers:**
 
 | Header | Purpose |
 |---|---|
+| `X-Org-Id` | Which organization within that tenant. Forwarded to the ML Agent only if sent; missing or blank means no organization is forwarded. |
 | `X-User-Id` | The analyst's identity (stand-in until real login/auth exists) — used for this backend's own logging only, never forwarded to the ML Agent (send the `operatorId` body field for that). |
 | `X-Correlation-Id` | Your own tracing ID — if you don't send one, this backend generates one and echoes it back on the response header. |
 
@@ -115,7 +115,7 @@ mapping if something looks wrong end-to-end:
 | Your field | Becomes | Notes |
 |---|---|---|
 | `X-Tenant-Id` (header) | `requestContext.tenant` | Passed straight through. |
-| `X-Org-Id` (header) | `requestContext.organization` | Passed straight through — not looked up or validated against anything server-side. |
+| `X-Org-Id` (header) | `requestContext.organization` | Only if you send it — left unset otherwise. Passed straight through — not looked up or validated against anything server-side. |
 | `requestId` | `requestContext.agentSessionId` | Reused as the closest thing this backend has to a request-grouping id; blank if you didn't send one. |
 | — | `requestContext.requestId` | This backend's own internal correlation id (from `X-Correlation-Id` or generated) — **not** your `requestId` field, despite the similar name. |
 | `operatorId` | `operatorId` | Only if you send it — left unset otherwise. Never filled from `X-User-Id` or `endUserId`. |

@@ -98,7 +98,7 @@ All controller endpoints are served under a common base path, `chatbot.api.base-
 
 `POST /back-office-ai/api/v1/chat/messages` — send a message (predefined prompt or free text),
 stream the ML Agent's response back as SSE. `tenantId`/`organization` travel as the
-required `X-Tenant-Id`/`X-Org-Id` request headers (not the body); `caseId`/
+`X-Tenant-Id` (required) / `X-Org-Id` (optional) request headers (not the body); `caseId`/
 `history` travel in the JSON body, not the URL — there's no backend-owned resource to
 nest a path under.
 
@@ -116,9 +116,10 @@ forwarded to the ML Agent's `operatorId` as-is. Both are forwarded **only if the
 frontend sends them** (blank counts as not sent), are never defaulted, and are never
 filled from each other or from `X-User-Id`/the BFF session.
 
-`X-Tenant-Id` and `X-Org-Id` are **required** headers — missing or blank
-either one rejects the request with `400 VALIDATION_ERROR` before it ever reaches the
-ML Agent. `X-User-Id` and `X-Correlation-Id` are optional (see architecture doc §11).
+`X-Tenant-Id` is a **required** header — missing or blank rejects the request with
+`400 VALIDATION_ERROR` before it ever reaches the ML Agent. `X-Org-Id`, `X-User-Id` and
+`X-Correlation-Id` are optional (see architecture doc §11); `X-Org-Id` is forwarded to
+the ML Agent only when sent (blank counts as not sent).
 Log/monitoring correlation for one chatbot interaction is handled entirely through
 `correlationId`, `tenantId`, and `caseId` — no separate client-owned tracing header is
 needed.
@@ -560,7 +561,7 @@ layer.
   `HistoryTurn`) and translates it at the boundary (`GrpcMlAgentClient
   #toConversationTurn`: `role == "user"` → a user turn, anything else → an agent
   turn) — a deliberate translation, not a lingering guess.
-- **`AgentRequestContext.organization` now has a source: the required `X-Org-Id`
+- **`AgentRequestContext.organization` now has a source: the optional `X-Org-Id`
   request header**, read by `RequestContextResolver` into `RequestContext.organization`
   and forwarded to the ML Agent as-is — this backend does not look it up, validate it
   against the session's org lists (`context_json.mappedOrgs`/`grantedOrgs`, in `BFF_SESSION`

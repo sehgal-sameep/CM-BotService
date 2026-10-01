@@ -59,14 +59,14 @@ rewrite from zero.
 ```
 Frontend (curl/Swagger)
    │  POST /api/v1/chat/messages   (Accept: text/event-stream)
-   │  Headers: X-Tenant-Id, X-Org-Id (both required)
+   │  Headers: X-Tenant-Id (required), X-Org-Id (optional)
    │  Body: { caseId, history?, requestId?, endUserId?, operatorId?, message }
    ▼
 ChatController
    → Bean Validation (WebExchangeBindException → 400, pre-stream — the only way a
    │   request fails before the SSE response commits at 200)
    → resolves RequestContext (tenant/organization from headers, case/user/correlationId)
-   │   — missing/blank X-Tenant-Id or X-Org-Id → ResponseStatusException(400)
+   │   — missing/blank X-Tenant-Id → ResponseStatusException(400)
    │   → also pre-stream, same VALIDATION_ERROR shape as a bad body field
    → returns Flux<ServerSentEvent<Object>> — Spring subscribes and writes as elements arrive
    ▼
@@ -141,9 +141,10 @@ own `HistoryTurn` (`role`/`content`) is a stable internal/DTO shape, not the wir
 format — `GrpcMlAgentClient#toConversationTurn` translates `role == "user"` into a
 user turn and anything else into an agent turn.
 
-`requestContext.organization` is sourced from the required `X-Org-Id` request
+`requestContext.organization` is sourced from the optional `X-Org-Id` request
 header (`RequestContextResolver` → `RequestContext.organization` → `MlAgentRequest
-.organization`), forwarded to the ML Agent as-is — this backend does not look it up,
+.organization`), forwarded to the ML Agent as-is only when sent (missing or blank →
+`null`, left unset on the request) — this backend does not look it up,
 validate it against `SessionContext.organizations` (a list, in `BFF_SESSION` mode), or
 otherwise interpret it. `requestContext
 .agentSessionId` reuses the caller's optional `requestId` (a loose grouping hint, per
@@ -261,7 +262,7 @@ No repository/persistence layer anywhere in this diagram — there is none.
 ## 4. API Surface & the pre-stream/in-stream error boundary
 
 One endpoint: `POST /api/v1/chat/messages`. `tenantId`/`organization` travel as the
-required `X-Tenant-Id`/`X-Org-Id` request headers; `caseId`/`history`/
+`X-Tenant-Id` (required) / `X-Org-Id` (optional) request headers; `caseId`/`history`/
 `requestId`/`endUserId` travel in the request body — there is no backend-owned
 resource to nest a path segment under. `history` is optional (omit or send empty to
 start a new conversation, resend the growing transcript to continue one); this backend
@@ -269,7 +270,7 @@ never stores, assembles, or interprets it.
 
 The one architectural line that matters here: **Bean Validation and header presence
 checks are the only things that can produce a non-200 HTTP status.** A missing/blank
-`X-Tenant-Id`/`X-Org-Id` is rejected via `ResponseStatusException(400)` from
+`X-Tenant-Id` is rejected via `ResponseStatusException(400)` from
 `RequestContextResolver`, mapped by `GlobalExceptionHandler` to the same
 `VALIDATION_ERROR` shape as a Bean Validation failure. Once `ChatOrchestrationService`
 returns its `Flux`, Spring commits the response at 200/`text/event-stream` as soon as
@@ -982,7 +983,7 @@ and `history` forwarded untouched (defaulting to an empty list, never `null`,
 when omitted), and every authentication rejection path (§20) plus its success path
 and both Redis-failure modes. Live curl verification: success/slow/error/empty/
 rejected scenarios; blank/missing-field validation → 400 (including a missing
-`X-Tenant-Id` or `X-Org-Id` header); circuit breaker forced open
+`X-Tenant-Id` header); circuit breaker forced open
 via repeated `trigger:error` → subsequent request rejected instantly with
 `CONCURRENCY_LIMIT_REACHED`, mock never re-invoked, `/actuator/health/readiness`
 stays UP throughout; mid-stream client disconnect → `SSE_CLIENT_CANCELLED` at INFO,
