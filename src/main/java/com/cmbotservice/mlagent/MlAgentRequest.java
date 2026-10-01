@@ -21,7 +21,9 @@ import java.util.List;
  *
  * <p>{@code endUserId} is an optional hint whose exact semantics (the analyst vs. the case's
  * customer) aren't yet pinned down upstream — forwarded as-is, never interpreted here. {@code
- * operatorId} identifies the analyst making the request.
+ * operatorId} identifies the operator making the request. Both come only from the frontend's
+ * request body and are {@code null} when it didn't send them; neither is ever defaulted, filled
+ * from the other, or derived from the caller's {@code RequestContext.userId()}.
  *
  * <p>{@code accessToken} is the caller's BFF-issued token ({@code null} when the request isn't
  * authenticated). It is never part of the protobuf request — {@code GrpcMlAgentClient} sends it

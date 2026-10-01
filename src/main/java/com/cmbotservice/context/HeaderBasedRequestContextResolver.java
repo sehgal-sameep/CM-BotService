@@ -35,7 +35,8 @@ public class HeaderBasedRequestContextResolver implements RequestContextResolver
     String correlationId = exchange.getAttribute(CorrelationIdFilter.CORRELATION_ID_ATTRIBUTE);
     if (!StringUtils.hasText(userId)) {
       log.warn(
-          "REQUEST_CONTEXT_USER_DEFAULTED header={} missing — using '{}' as operatorId",
+          "REQUEST_CONTEXT_USER_DEFAULTED header={} missing — using '{}' as userId (logging"
+              + " only, never forwarded to the ML Agent)",
           RequestHeaders.USER_ID,
           UNKNOWN_USER);
     }

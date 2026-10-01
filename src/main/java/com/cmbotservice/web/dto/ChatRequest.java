@@ -48,12 +48,22 @@ public record ChatRequest(
     @Size(max = 200, message = "endUserId must be at most 200 characters")
         @Schema(
             description =
-                "Optional hint forwarded as-is to the ML Agent's case context. Exact "
-                    + "semantics are defined by the ML Agent's contract, not this backend — forwarded "
-                    + "untouched, never interpreted or defaulted here.",
+                "Optional hint forwarded as-is to the ML Agent's case context (end_user_id), "
+                    + "only when sent. Exact semantics are defined by the ML Agent's contract, not "
+                    + "this backend — forwarded untouched, never interpreted, defaulted, or filled "
+                    + "from operatorId/X-User-Id here.",
             example = "gadi5",
             requiredMode = Schema.RequiredMode.NOT_REQUIRED)
         String endUserId,
+    @Size(max = 200, message = "operatorId must be at most 200 characters")
+        @Schema(
+            description =
+                "Optional identifier of the operator making the request, forwarded as-is to the "
+                    + "ML Agent (operator_id), only when sent. Never defaulted, and never filled "
+                    + "from endUserId, the X-User-Id header, or the BFF session.",
+            example = "analyst-1",
+            requiredMode = Schema.RequiredMode.NOT_REQUIRED)
+        String operatorId,
     @NotBlank(message = "message must not be blank")
         @Size(max = 4000, message = "message must be at most 4000 characters")
         @Schema(
@@ -65,10 +75,17 @@ public record ChatRequest(
             example = "Summarize this case for me")
         String message) {
 
-  /** A blank {@code caseId} means "no case" — normalized to {@code null} before validation. */
+  /**
+   * A blank {@code caseId} means "no case", and a blank {@code endUserId}/{@code operatorId} means
+   * "not sent" — all normalized to {@code null} before validation, so nothing blank is forwarded.
+   */
   public ChatRequest {
-    if (caseId != null && caseId.isBlank()) {
-      caseId = null;
-    }
+    caseId = blankToNull(caseId);
+    endUserId = blankToNull(endUserId);
+    operatorId = blankToNull(operatorId);
+  }
+
+  private static String blankToNull(String value) {
+    return value != null && value.isBlank() ? null : value;
   }
 }

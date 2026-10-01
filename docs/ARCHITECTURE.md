@@ -60,7 +60,7 @@ rewrite from zero.
 Frontend (curl/Swagger)
    │  POST /api/v1/chat/messages   (Accept: text/event-stream)
    │  Headers: X-Tenant-Id, X-Org-Id (both required)
-   │  Body: { caseId, history?, requestId?, endUserId?, message }
+   │  Body: { caseId, history?, requestId?, endUserId?, operatorId?, message }
    ▼
 ChatController
    → Bean Validation (WebExchangeBindException → 400, pre-stream — the only way a
@@ -150,8 +150,11 @@ otherwise interpret it. `requestContext
 the contract's own "groups related requests for tracing and metrics" — it carries no
 server-side state); `requestContext.requestId` is this backend's *own* correlation id
 (from `X-Correlation-Id`/generated), not the caller's `requestId` field, despite the
-similarly-named fields on both sides. `operatorId` is sourced from the existing
-analyst identity (`RequestContext.userId()`). The product/prod-auth path
+similarly-named fields on both sides. `operatorId` and `caseContext.endUserId` come
+only from the frontend's optional `operatorId`/`endUserId` body fields and are left
+unset when not sent — neither is ever defaulted or filled from the other, and
+`RequestContext.userId()` (`X-User-Id`/session username) is used for logging only,
+never forwarded. The product/prod-auth path
 (`context_token` on the old contract) has no equivalent field at all in this finalized
 contract — moot, not merely unwired.
 

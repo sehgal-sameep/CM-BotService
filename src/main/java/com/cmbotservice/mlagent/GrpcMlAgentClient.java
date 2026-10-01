@@ -284,9 +284,11 @@ public class GrpcMlAgentClient implements MlAgentClient {
     AskCaseManagerRequest.Builder builder =
         AskCaseManagerRequest.newBuilder()
             .setRequestContext(requestContext)
-            .setOperatorId(request.operatorId() == null ? "" : request.operatorId())
             .setPrompt(request.message())
             .setCaseContext(caseContext.build());
+    if (request.operatorId() != null) {
+      builder.setOperatorId(request.operatorId());
+    }
 
     if (request.history() != null) {
       request.history().forEach(turn -> builder.addHistory(toConversationTurn(turn)));

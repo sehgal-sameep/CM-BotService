@@ -113,14 +113,15 @@ public class ChatOrchestrationServiceImpl implements ChatOrchestrationService {
     // contain personal data, so their content is never logged (see LogSanitizer).
     log.info(
         "CHAT_REQUEST_RECEIVED messageId={} userId={} organization={} requestId={}"
-            + " messageLength={} historyTurns={} endUserIdPresent={}",
+            + " messageLength={} historyTurns={} endUserIdPresent={} operatorIdPresent={}",
         messageId,
         context.userId(),
         context.organization(),
         request.requestId() == null ? "<absent>" : request.requestId(),
         request.message().length(),
         request.history() == null ? 0 : request.history().size(),
-        request.endUserId() != null);
+        request.endUserId() != null,
+        request.operatorId() != null);
     metrics.connectionOpened();
 
     boolean tooLong = request.message().length() > chatProperties.maxMessageLength();
@@ -193,7 +194,7 @@ public class ChatOrchestrationServiceImpl implements ChatOrchestrationService {
             context.caseId(),
             toMlAgentHistory(request.history()),
             messageId,
-            context.userId(),
+            request.operatorId(),
             request.endUserId(),
             context.correlationId(),
             request.requestId(),

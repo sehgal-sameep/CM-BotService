@@ -34,8 +34,8 @@ It's a pass-through proxy, not a translator, a database, or a session manager. E
 | `history` | The full conversation transcript so far, oldest turn first. This is the **only** way to continue a conversation — the ML Agent's contract has no session/continuation token at all. Resend the growing transcript on every follow-up message. |
 | `messageId` | A unique ID this backend generates per message, for tracing in logs. Not something the frontend sends; only appears in a `service_error` event (§6). |
 | `requestId` | Optional, frontend-generated. Purely for your own tracing/support tickets — this backend logs it but doesn't use it for anything else. |
-| `endUserId` | Optional hint about who the message is really about/for. Forwarded to the ML Agent's case context as-is; this backend never interprets or defaults it. |
-| `operatorId` | The analyst's identity, taken from `X-User-Id` (or the BFF session, once auth is fully wired up) — not something the frontend sends as a body field. |
+| `endUserId` | Optional hint about who the message is really about/for. Forwarded to the ML Agent's case context as-is, only if the frontend sends it; this backend never interprets, defaults, or fills it from anything else. |
+| `operatorId` | Optional identifier of the operator making the request. Forwarded to the ML Agent as-is, only if the frontend sends it in the body; never defaulted, and never taken from `X-User-Id`, the BFF session, or `endUserId`. |
 
 ## 3. Step 1 — What the frontend sends to this backend
 
@@ -58,7 +58,7 @@ Accept: text/event-stream
 
 | Header | Purpose |
 |---|---|
-| `X-User-Id` | The analyst's identity (stand-in until real login/auth exists) — becomes `operatorId` on the ML Agent request. |
+| `X-User-Id` | The analyst's identity (stand-in until real login/auth exists) — used for this backend's own logging only, never forwarded to the ML Agent (send the `operatorId` body field for that). |
 | `X-Correlation-Id` | Your own tracing ID — if you don't send one, this backend generates one and echoes it back on the response header. |
 
 **Request body:**
@@ -69,6 +69,7 @@ Accept: text/event-stream
   "history": [],
   "requestId": "req-a1b2c3",
   "endUserId": null,
+  "operatorId": "analyst-1",
   "message": "Summarize this case for me"
 }
 ```
@@ -78,7 +79,8 @@ Accept: text/event-stream
 | `caseId` | **Yes** | Letters, digits, `_`, `-` only. Max 100 chars. |
 | `history` | No | Omit (or send an empty array) to start a brand-new conversation. Otherwise, resend the full transcript so far — see §7. Each turn is `{ "role": "user"|"assistant", "content": "..." }`; at most 50 turns. `content` is optional and may be omitted, `null`, empty, or blank. |
 | `requestId` | No | Your own tracking ID, for your logs only. |
-| `endUserId` | No | Forwarded to the ML Agent as-is; not interpreted by this backend. |
+| `endUserId` | No | Forwarded to the ML Agent as-is, only if sent; not interpreted by this backend. |
+| `operatorId` | No | Forwarded to the ML Agent as-is, only if sent; never defaulted or filled from `X-User-Id`/`endUserId`. Max 200 chars. |
 | `message` | **Yes** | The analyst's question/prompt. Max 4000 characters. |
 
 **That's it — this is the entire contract the frontend needs to know.** §4 happens
@@ -116,14 +118,15 @@ mapping if something looks wrong end-to-end:
 | `X-Org-Id` (header) | `requestContext.organization` | Passed straight through — not looked up or validated against anything server-side. |
 | `requestId` | `requestContext.agentSessionId` | Reused as the closest thing this backend has to a request-grouping id; blank if you didn't send one. |
 | — | `requestContext.requestId` | This backend's own internal correlation id (from `X-Correlation-Id` or generated) — **not** your `requestId` field, despite the similar name. |
-| `X-User-Id` (header) | `operatorId` | The analyst identity, not a body field. |
+| `operatorId` | `operatorId` | Only if you send it — left unset otherwise. Never filled from `X-User-Id` or `endUserId`. |
 | `message` | `prompt` | Untouched. |
 | `caseId` | `caseContext.caseId` | Nested. |
-| `endUserId` | `caseContext.endUserId` | Nested. |
+| `endUserId` | `caseContext.endUserId` | Nested. Only if you send it — left unset otherwise. |
 | `history` | `history` | Each `{role, content}` turn becomes a `user`/`agent` turn in the ML Agent's own shape — `role: "user"` maps to a user turn, anything else to an agent turn. |
 
 Fields that **never** leave this backend: `X-Correlation-Id` (goes out as
-`requestContext.requestId`, not literally the header value's name), `messageId`. Those
+`requestContext.requestId`, not literally the header value's name), `messageId`,
+`X-User-Id`. Those
 exist purely for this backend's own logging/tracing — `correlationId`/`tenantId`/
 `caseId` are already enough to trace one chatbot interaction end to end.
 
@@ -352,7 +355,7 @@ caseId                ───▶  caseContext.caseId                  tool_res
 endUserId             ───▶  caseContext.endUserId               payload            ═══▶  event:payload      {"payload":{...}}
 history               ───▶  history (role/content ─▶ user/agent) done              ═══▶  event:done         {"done":{...}}
 message               ───▶  prompt                              error              ═══▶  event:error        {"error":{...}}
-X-User-Id             ───▶  operatorId                          ping               ═══▶  event:ping         {"ping":{}}
+operatorId            ───▶  operatorId                          ping               ═══▶  event:ping         {"ping":{}}
 requestId             ───▶  requestContext.agentSessionId
 X-Correlation-Id      ───▶  requestContext.requestId            (no agent event)   ───▶  event:service_error (this backend's own)
 ```

@@ -111,7 +111,10 @@ ML Agent (translated into its own `user`/`agent` turn shape — see
 interprets the transcript** — the caller is responsible for remembering and resending
 it. `requestId` is an optional caller-generated id forwarded for tracing/correlation
 only. `endUserId` is an optional pass-through hint forwarded to the ML Agent's case
-context — this backend does not interpret it.
+context — this backend does not interpret it. `operatorId` is likewise optional and
+forwarded to the ML Agent's `operatorId` as-is. Both are forwarded **only if the
+frontend sends them** (blank counts as not sent), are never defaulted, and are never
+filled from each other or from `X-User-Id`/the BFF session.
 
 `X-Tenant-Id` and `X-Org-Id` are **required** headers — missing or blank
 either one rejects the request with `400 VALIDATION_ERROR` before it ever reaches the
@@ -563,10 +566,10 @@ layer.
   against the session's org lists (`context_json.mappedOrgs`/`grantedOrgs`, in `BFF_SESSION`
   mode — not consumed here at all, since nothing downstream needs them), or otherwise
   interpret it.
-- **`operatorId` is sourced from the existing analyst identity** (`RequestContext
+- **`operatorId` is an optional frontend body field**, forwarded to the ML Agent only
+  when sent. It is no longer derived from the analyst identity (`RequestContext
   .userId()` — the `X-User-Id` header in `mode: NONE`, or the BFF session username in
-  `mode: BFF_SESSION`), the same value this backend already had available; nothing new
-  had to be added upstream for this field.
+  `mode: BFF_SESSION`), which is now used for this backend's own logging only.
 - **The Redis session layout is now confirmed**, resolving what was previously an
   unconfirmed assumption: one JSON document per session at key
   `session:<sessionId>:<tenant>`, shaped as `{context_json, access_token,

@@ -409,6 +409,35 @@ class GrpcMlAgentClientTest {
   }
 
   @Test
+  void absentOperatorIdAndEndUserId_areNotSetOnTheProtoRequest() throws IOException {
+    MlAgentRequest withoutIds =
+        new MlAgentRequest(
+            "tenant-1",
+            "org-1",
+            "case-1",
+            List.of(),
+            "msg-1",
+            null,
+            null,
+            "corr-1",
+            "req-1",
+            "hi",
+            null);
+    GrpcMlAgentClient client =
+        startClientWith(
+            observer -> {
+              observer.onNext(AnswerEvent.newBuilder().setDone(Done.newBuilder()).build());
+              observer.onCompleted();
+            });
+
+    client.streamResponse(withoutIds).blockLast(Duration.ofSeconds(5));
+
+    AskCaseManagerRequest sent = capturedRequest.get();
+    assertThat(sent.getOperatorId()).isEmpty();
+    assertThat(sent.getCaseContext().getEndUserId()).isEmpty();
+  }
+
+  @Test
   void agentHistoryTurn_isMappedToTheAgentOneofArm() throws IOException {
     MlAgentRequest requestWithAgentTurn =
         new MlAgentRequest(

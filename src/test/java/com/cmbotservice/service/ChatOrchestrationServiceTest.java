@@ -90,7 +90,7 @@ class ChatOrchestrationServiceTest {
   }
 
   private static ChatRequest chatRequest(String message) {
-    return new ChatRequest("case-1", null, "req-1", null, message);
+    return new ChatRequest("case-1", null, "req-1", null, null, message);
   }
 
   private static ChatProperties defaultChatProperties() {
@@ -532,6 +532,7 @@ class ChatOrchestrationServiceTest {
             List.of(new HistoryTurn("user", "hi"), new HistoryTurn("assistant", "hello")),
             "req-1",
             null,
+            null,
             "hello");
 
     service.streamMessage(context(), request).collectList().block(Duration.ofSeconds(5));
@@ -541,6 +542,55 @@ class ChatOrchestrationServiceTest {
         .containsExactly(
             new MlAgentRequest.HistoryTurn("user", "hi"),
             new MlAgentRequest.HistoryTurn("assistant", "hello"));
+  }
+
+  @Test
+  void operatorIdAndEndUserId_areForwardedFromTheRequestBody_neverFromContextUserId() {
+    AtomicReference<MlAgentRequest> captured = new AtomicReference<>();
+    MlAgentClient capturing =
+        request -> {
+          captured.set(request);
+          return Flux.just(DONE);
+        };
+    ChatOrchestrationService service =
+        newService(
+            CircuitBreaker.ofDefaults("t-ids"),
+            Bulkhead.ofDefaults("t-ids"),
+            5,
+            defaultChatProperties(),
+            capturing);
+    ChatRequest request = new ChatRequest("case-1", null, "req-1", "end-user-9", "op-7", "hello");
+
+    service.streamMessage(context(), request).collectList().block(Duration.ofSeconds(5));
+
+    assertThat(captured.get().operatorId()).isEqualTo("op-7");
+    assertThat(captured.get().endUserId()).isEqualTo("end-user-9");
+  }
+
+  @Test
+  void absentOperatorIdAndEndUserId_stayNull_evenWhenTheContextHasAUserId() {
+    AtomicReference<MlAgentRequest> captured = new AtomicReference<>();
+    MlAgentClient capturing =
+        request -> {
+          captured.set(request);
+          return Flux.just(DONE);
+        };
+    ChatOrchestrationService service =
+        newService(
+            CircuitBreaker.ofDefaults("t-no-ids"),
+            Bulkhead.ofDefaults("t-no-ids"),
+            5,
+            defaultChatProperties(),
+            capturing);
+
+    // context() carries userId "analyst-1" — it must not leak into either field.
+    service
+        .streamMessage(context(), chatRequest("hello"))
+        .collectList()
+        .block(Duration.ofSeconds(5));
+
+    assertThat(captured.get().operatorId()).isNull();
+    assertThat(captured.get().endUserId()).isNull();
   }
 
   @Test
