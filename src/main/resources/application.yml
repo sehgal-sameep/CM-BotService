@@ -161,10 +161,10 @@ resilience:
 chat:
   # Operationally tunable ceiling, checked at runtime — works alongside (not instead
   # of) the hard compile-time @Size(max = 4000) backstop on ChatRequest.message.
-  max-message-length: 4000
+  max-message-length: ${MAX_CHAT_MESSAGE_LENGTH:8000}
   # Absolute ceiling on one ML Agent call's total duration, regardless of activity —
   # see ChatOrchestrationServiceImpl#withTotalDeadline.
-  max-stream-duration: 45s
+  max-stream-duration: ${MAX_CHAT_STREAM_DURATION:90s}
 
 app:
   mock-ml-agent:
